@@ -1,0 +1,1561 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Autostereogram decoder</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600&family=Zilla+Slab:wght@600;700&display=swap" rel="stylesheet">
+<style>
+:root{
+  --enamel:#123230;
+  --panel:#173d3a;
+  --well:#0c2422;
+  --rule:#2b5a55;
+  --rule-soft:#1f4844;
+  --ivory:#eee7d6;
+  --dim:#93aca8;
+  --dimmer:#6d8b87;
+  --red:#e2564a;
+  --cyan:#5cc9cc;
+  --brass:#dda63f;
+  --mono:"IBM Plex Mono",ui-monospace,SFMono-Regular,Menlo,monospace;
+  --sans:"IBM Plex Sans",system-ui,-apple-system,Segoe UI,sans-serif;
+  --slab:"Zilla Slab","IBM Plex Serif",Georgia,serif;
+}
+*{box-sizing:border-box}
+html,body{margin:0;padding:0}
+body{
+  background:var(--enamel);
+  color:var(--ivory);
+  font-family:var(--sans);
+  font-size:15px;
+  line-height:1.55;
+  -webkit-font-smoothing:antialiased;
+}
+.wrap{max-width:1260px;margin:0 auto;padding:28px 22px 80px}
+
+/* ---------- header ---------- */
+header{display:flex;flex-wrap:wrap;align-items:flex-end;gap:18px 26px;padding-bottom:20px;border-bottom:1px solid var(--rule)}
+h1{
+  font-family:var(--slab);font-weight:700;
+  font-size:clamp(1.9rem,4.6vw,2.9rem);
+  line-height:.98;letter-spacing:-.02em;margin:0;
+}
+h1 .b{display:block;color:var(--dim)}
+.eyebrow{
+  font-family:var(--mono);font-size:.66rem;font-weight:500;
+  letter-spacing:.2em;text-transform:uppercase;color:var(--dimmer);margin:0 0 10px
+}
+.header-actions{margin-left:auto;display:flex;gap:8px;flex-wrap:wrap}
+
+/* ---------- buttons ---------- */
+button{font:inherit;cursor:pointer}
+.btn{
+  font-family:var(--mono);font-size:.74rem;font-weight:500;letter-spacing:.09em;text-transform:uppercase;
+  background:transparent;color:var(--ivory);
+  border:1px solid var(--rule);border-radius:3px;padding:9px 15px;
+  transition:background .14s ease,border-color .14s ease,color .14s ease;
+}
+.btn:hover{background:var(--panel);border-color:var(--dim)}
+.btn.primary{background:var(--brass);color:#16302c;border-color:var(--brass);font-weight:600}
+.btn.primary:hover{background:#eeb752;border-color:#eeb752}
+.btn:disabled{opacity:.38;cursor:not-allowed}
+:focus-visible{outline:2px solid var(--brass);outline-offset:2px}
+
+/* ---------- lock strip (signature) ---------- */
+
+.readout{font-family:var(--slab);font-weight:700;font-size:2.5rem;line-height:1;color:var(--brass);letter-spacing:-.01em}
+.readout .u{font-size:1rem;color:var(--dim);margin-left:4px;font-family:var(--mono);font-weight:400}
+.lock-label{font-family:var(--mono);font-size:.66rem;letter-spacing:.2em;text-transform:uppercase;color:var(--dimmer)}
+
+.lock-canvas-holder{position:relative;background:#000;min-height:110px;display:flex;align-items:center;justify-content:center}
+.lock-canvas-holder canvas{display:block;width:100%;height:auto}
+.placeholder{padding:34px 20px;text-align:center;color:var(--dimmer);font-family:var(--mono);font-size:.76rem;letter-spacing:.12em;text-transform:uppercase}
+.progress{height:2px;background:var(--rule-soft)}
+.progress span{display:block;height:100%;width:0;background:var(--brass);transition:width .1s linear}
+
+/* ---------- layout ---------- */
+/* shift bar */
+.shiftbar{display:grid;grid-template-columns:minmax(0,1fr);gap:0;margin-top:20px;overflow:hidden}
+@media(min-width:820px){.shiftbar{grid-template-columns:150px minmax(0,1fr) 148px}}
+.sb-read{padding:13px 16px;border-bottom:1px solid var(--rule-soft)}
+.sb-plot{min-width:0;border-bottom:1px solid var(--rule-soft)}
+.sb-src{padding:13px 16px;display:flex;flex-direction:column;gap:8px;align-items:flex-start}
+@media(min-width:820px){
+  .sb-read{border-bottom:0;border-right:1px solid var(--rule-soft)}
+  .sb-plot{border-bottom:0;border-right:1px solid var(--rule-soft)}
+}
+.lock-label.mt{margin-top:10px}
+.row.mt{margin-top:12px}
+.readout.small{font-size:1.3rem;color:var(--ivory)}
+.thumb{width:100%;padding:0;line-height:0;background:#000;border:1px solid var(--rule);border-radius:3px;overflow:hidden;cursor:zoom-in}
+.thumb canvas{width:100%;height:auto;display:block}
+.thumb:hover{border-color:var(--brass)}
+.src-meta{font-family:var(--mono);font-size:.66rem;color:var(--dimmer);letter-spacing:.04em;line-height:1.4}
+.key.push{margin-left:auto}
+
+/* depth + controls */
+.main{display:grid;grid-template-columns:minmax(0,1fr);gap:20px;margin-top:20px;align-items:start}
+@media(min-width:1040px){.main{grid-template-columns:minmax(0,1fr) 418px;gap:20px}}
+.out{min-width:0}
+.side{min-width:0}
+.stage-view.big{min-height:280px}
+
+/* every control visible: two flowing columns, no scroller, no accordion */
+.ctl-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(158px,1fr));gap:13px 16px;align-items:start}
+.ctl-grid .span{grid-column:1/-1}
+.ctl-grid .group-title{margin:6px 0 -4px}
+.ctl-grid .group-title:first-child{margin-top:0}
+.ctl{display:grid;grid-template-columns:1fr auto;align-items:baseline;gap:0 8px;padding:0;border:0;min-width:0}
+.ctl label{font-size:.82rem;color:var(--ivory);line-height:1.25}
+.ctl .val{font-family:var(--mono);font-size:.73rem;color:var(--brass);text-align:right;white-space:nowrap}
+.ctl .hint{grid-column:1/-1;font-size:.71rem;color:var(--dimmer);margin-top:2px;line-height:1.3}
+.ctl input[type=range]{grid-column:1/-1;width:100%;margin:6px 0 0;accent-color:var(--brass);height:16px}
+.ctl.off{opacity:.4}
+.ctl.off input{cursor:not-allowed}
+.ctl-grid .toggle{padding:2px 0;font-size:.8rem;align-self:center}
+.ctl-grid .seg{width:100%}
+.ctl-grid .seg button{flex:1;padding:8px 4px}
+
+/* auxiliary: two narrow columns */
+.aux{margin-top:32px}
+.aux>h2{font-family:var(--mono);font-size:.68rem;letter-spacing:.2em;text-transform:uppercase;color:var(--dimmer);font-weight:500;margin:0 0 16px;padding-top:20px;border-top:1px solid var(--rule)}
+.aux-grid{display:grid;grid-template-columns:minmax(0,1fr);gap:18px}
+@media(min-width:880px){.aux-grid{grid-template-columns:repeat(2,minmax(0,1fr))}}
+.aux .stage-view{min-height:120px}
+.note{margin:0;font-size:.8rem;color:var(--dim);line-height:1.45}
+.card-body.tight{padding:12px 15px 14px}
+.film{border-top:1px solid var(--rule-soft)}
+
+/* enlarge */
+.modal{position:fixed;inset:0;z-index:60;background:rgba(6,20,19,.94);display:flex;align-items:center;justify-content:center;padding:26px;cursor:zoom-out}
+.modal img{max-width:100%;max-height:100%;border:1px solid var(--rule);border-radius:3px}
+
+.card{border:1px solid var(--rule);border-radius:3px;background:var(--panel);overflow:hidden}
+
+.card-head{display:flex;align-items:center;gap:12px;padding:13px 16px;border-bottom:1px solid var(--rule-soft)}
+.step{
+  font-family:var(--mono);font-size:.68rem;font-weight:600;color:var(--enamel);
+  background:var(--dim);border-radius:2px;padding:1px 6px;letter-spacing:.06em;
+}
+.card-title{font-family:var(--mono);font-size:.72rem;letter-spacing:.17em;text-transform:uppercase;color:var(--ivory)}
+.card-aside{margin-left:auto;font-family:var(--mono);font-size:.7rem;color:var(--dimmer)}
+.card-body{padding:16px}
+.card-body.flush{padding:0}
+
+/* ---------- drop zone ---------- */
+.drop{border:1px dashed var(--rule);border-radius:3px;padding:30px 20px;text-align:center;color:var(--dim);transition:border-color .15s,background .15s}
+.drop.over{border-color:var(--brass);background:rgba(221,166,63,.07)}
+.drop p{margin:0 0 14px;font-size:.9rem}
+
+/* ---------- plot ---------- */
+.plot-holder{position:relative;background:var(--well);line-height:0}
+#plot{width:100%;height:auto;display:block;cursor:crosshair}
+.plot-legend{display:flex;gap:16px;flex-wrap:wrap;padding:10px 16px;border-top:1px solid var(--rule-soft);font-family:var(--mono);font-size:.68rem;color:var(--dimmer);letter-spacing:.05em}
+.key{display:inline-flex;align-items:center;gap:6px}
+.swatch{width:11px;height:2px;background:var(--dim)}
+.swatch.pick{background:var(--brass);height:9px;width:2px}
+.swatch.cand{background:var(--cyan);height:5px;width:2px}
+
+/* ---------- controls ---------- */
+.ctl{display:grid;grid-template-columns:1fr auto;align-items:center;gap:2px 12px;padding:9px 0;border-bottom:1px solid var(--rule-soft)}
+.ctl:last-child{border-bottom:0;padding-bottom:0}
+.ctl label{font-size:.86rem;color:var(--ivory)}
+.ctl .val{font-family:var(--mono);font-size:.8rem;color:var(--brass);text-align:right;min-width:4.5ch}
+.ctl .hint{grid-column:1/-1;font-size:.76rem;color:var(--dimmer);margin-top:2px;line-height:1.35}
+.ctl input[type=range]{grid-column:1/-1;width:100%;margin:6px 0 0;accent-color:var(--brass);height:18px}
+
+.group-title{font-family:var(--mono);font-size:.66rem;letter-spacing:.18em;text-transform:uppercase;color:var(--dimmer);margin:0 0 4px}
+.row{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:14px}
+input[type=number]{max-width:82px;
+  font-family:var(--mono);font-size:.82rem;background:var(--well);color:var(--ivory);
+  border:1px solid var(--rule);border-radius:3px;padding:7px 9px;width:88px
+}
+.toggle{display:flex;align-items:center;gap:8px;font-size:.86rem;cursor:pointer;padding:9px 0}
+.toggle input{accent-color:var(--brass);width:15px;height:15px}
+
+/* ---------- stage viewer ---------- */
+.tabs{display:flex;flex-wrap:wrap;gap:0;border-bottom:1px solid var(--rule-soft);background:var(--panel)}
+.tab{
+  font-family:var(--mono);font-size:.68rem;letter-spacing:.1em;text-transform:uppercase;
+  background:transparent;border:0;border-bottom:2px solid transparent;color:var(--dimmer);
+  padding:11px 12px;transition:color .12s,border-color .12s
+}
+.tab:hover{color:var(--ivory)}
+.tab[aria-selected=true]{color:var(--brass);border-bottom-color:var(--brass)}
+.stage-view{background:#000;line-height:0;min-height:160px;display:flex;align-items:center;justify-content:center}
+.stage-view canvas{width:100%;height:auto;display:block}
+.stage-foot{display:flex;align-items:center;gap:14px;padding:12px 16px;border-top:1px solid var(--rule-soft);flex-wrap:wrap}
+.stage-desc{font-size:.84rem;color:var(--dim);flex:1;min-width:200px}
+.film{display:grid;grid-template-columns:repeat(3,1fr);gap:1px;background:var(--rule-soft)}
+.film button{border:0;padding:0;background:#000;position:relative;line-height:0;display:block;cursor:pointer}
+.film canvas{width:100%;height:auto;display:block;opacity:.72;transition:opacity .14s}
+.film button:hover canvas,.film button[aria-current=true] canvas{opacity:1}
+.film span{
+  position:absolute;left:0;bottom:0;right:0;font-family:var(--mono);font-size:.6rem;letter-spacing:.1em;
+  text-transform:uppercase;padding:4px 6px;background:linear-gradient(transparent,rgba(0,0,0,.85));
+  color:var(--dim);text-align:left;line-height:1.2
+}
+.film button[aria-current=true] span{color:var(--brass)}
+
+/* ---------- method ---------- */
+.method{margin-top:34px;padding-top:22px;border-top:1px solid var(--rule)}
+.method h2{font-family:var(--mono);font-size:.68rem;letter-spacing:.2em;text-transform:uppercase;color:var(--dimmer);font-weight:500;margin:0 0 16px}
+.method ol{margin:0;padding:0;list-style:none;display:grid;gap:16px}
+@media(min-width:760px){.method ol{grid-template-columns:repeat(auto-fit,minmax(210px,1fr));gap:26px}}
+.method li{border-top:1px solid var(--rule-soft);padding-top:12px}
+.method h3{font-family:var(--slab);font-size:1.05rem;font-weight:600;margin:0 0 6px}
+.method p{margin:0;font-size:.86rem;color:var(--dim)}
+.method code{font-family:var(--mono);font-size:.82em;color:var(--cyan)}
+footer{margin-top:30px;font-family:var(--mono);font-size:.68rem;color:var(--dimmer);letter-spacing:.08em}
+
+.scale{min-width:160px;flex:1}
+.scale canvas{width:100%;height:11px;display:block;border-radius:2px}
+.scale-ends{display:flex;justify-content:space-between;font-family:var(--mono);font-size:.66rem;color:var(--dimmer);margin-top:5px;letter-spacing:.05em}
+.seg{display:inline-flex;border:1px solid var(--rule);border-radius:3px;overflow:hidden}
+.seg button{font-family:var(--mono);font-size:.68rem;letter-spacing:.09em;text-transform:uppercase;background:transparent;color:var(--dimmer);border:0;padding:8px 11px;transition:background .12s,color .12s}
+.seg button + button{border-left:1px solid var(--rule)}
+.seg button:hover{color:var(--ivory)}
+.seg button[aria-pressed=true]{background:var(--brass);color:#16302c;font-weight:600}
+.ctl .seg{grid-column:1/-1;margin-top:8px}
+.wrap.pre .shiftbar,.wrap.pre .main,.wrap.pre .aux{display:none}
+.hidden{display:none!important}
+@media(prefers-reduced-motion:reduce){*{transition:none!important;animation:none!important}}
+</style>
+</head>
+<body>
+<div class="wrap pre">
+
+<header>
+  <div>
+    <p class="eyebrow">local period → disparity → depth</p>
+    <h1>Autostereogram<span class="b">decoder</span></h1>
+  </div>
+  <div class="header-actions">
+    <button class="btn" id="demoBtn">Build a test image</button>
+    <button class="btn primary" id="loadBtn">Load image</button>
+    <input type="file" id="file" accept="image/*" class="hidden">
+  </div>
+</header>
+
+<div class="card" id="dropWrap">
+  <div class="card-body">
+    <div class="drop" id="drop">
+      <p>Drop an autostereogram here, paste one, or load a file.<br>No image handy? Build a test image.</p>
+      <button class="btn" id="drop2">Choose file</button>
+    </div>
+  </div>
+</div>
+
+<!-- ============ shift, full width ============ -->
+<section class="card shiftbar">
+  <div class="sb-read">
+    <div class="lock-label">Shift</div>
+    <div class="readout" id="shiftOut">—<span class="u">px</span></div>
+    <div class="lock-label mt">Self-distance</div>
+    <div class="readout small" id="distOut">—</div>
+    <div class="row mt">
+      <input type="number" id="shiftIn" min="1" step="1" value="0">
+      <button class="btn" id="autoBtn">First dip</button>
+    </div>
+  </div>
+  <div class="sb-plot">
+    <div class="progress"><span id="bar"></span></div>
+    <div class="plot-holder"><canvas id="plot"></canvas></div>
+    <div class="plot-legend">
+      <span class="key"><i class="swatch"></i> RMS difference vs shift</span>
+      <span class="key"><i class="swatch cand"></i> candidate dip</span>
+      <span class="key"><i class="swatch pick"></i> selected</span>
+      <span class="key" id="plotMeta"></span>
+      <span class="key push">click the curve to pick a shift</span>
+    </div>
+  </div>
+  <div class="sb-src">
+    <button class="thumb" id="srcView" title="Click to enlarge the source image">
+      <canvas id="srcCanvas"></canvas>
+    </button>
+    <div class="src-meta" id="srcMeta">no image</div>
+  </div>
+</section>
+
+<!-- ============ depth + controls ============ -->
+<div class="main">
+  <div class="out">
+    <div class="card depth-card">
+      <div class="card-head">
+        <span class="card-title">Depth</span>
+        <span class="card-aside" id="gridMeta">—</span>
+      </div>
+      <div class="progress"><span id="dbar"></span></div>
+      <div class="stage-view big" id="depthView"><div class="placeholder">no depth field yet</div></div>
+      <div class="stage-foot">
+        <div class="scale">
+          <canvas id="ramp" width="240" height="11"></canvas>
+          <div class="scale-ends"><span id="rampFar">far</span><span id="rampNear">near</span></div>
+        </div>
+        <div class="seg" id="cmapSeg">
+          <button data-i="2" aria-pressed="true">Grey</button>
+          <button data-i="0">Enamel</button>
+          <button data-i="1">Viridis</button>
+        </div>
+        <button class="btn" id="saveDepth" disabled>Save PNG</button>
+      </div>
+    </div>
+  </div>
+
+  <aside class="side">
+    <div class="card">
+      <div class="card-head"><span class="card-title">Controls</span></div>
+      <div class="card-body">
+        <div class="ctl-grid">
+          <p class="group-title span">Depth field</p>
+          <div class="ctl">
+            <label for="gridN">Cells / short side</label><span class="val" id="gridNV">30</span>
+            <span class="hint">Always square, so this sets both counts.</span>
+            <input type="range" id="gridN" min="4" max="200" step="1" value="30">
+          </div>
+          <div class="ctl">
+            <label for="win">Window size</label><span class="val" id="winV">1.0× cell</span>
+            <span class="hint">Multiples of the cell, floor 14 px.</span>
+            <input type="range" id="win" min="1" max="4" step="0.1" value="1">
+          </div>
+          <div class="ctl" title="Width of the Gaussian on each cell centre">
+            <label for="blend">Blend radius σ</label><span class="val" id="blendV">2.5 cells</span>
+            <input type="range" id="blend" min="0" max="4" step="0.1" value="2.5">
+          </div>
+          <div class="ctl" title="Cells below this are filled in from neighbours">
+            <label for="floor">Confidence floor</label><span class="val" id="floorV">auto 0.00</span>
+            <input type="range" id="floor" min="0" max="1" step="0.01" value="0.33">
+          </div>
+          <label class="toggle" title="Raise the floor until the surviving cells stop disagreeing with their neighbours"><input type="checkbox" id="autoFloor" checked> Adaptive</label>
+          <div class="ctl" title="How far a cell's period may drift from the global one">
+            <label for="band">Search band</label><span class="val" id="bandV">±40%</span>
+            <input type="range" id="band" min="5" max="60" step="1" value="40">
+          </div>
+          <label class="toggle"><input type="checkbox" id="dim" checked> Fade unread areas</label>
+          <label class="toggle"><input type="checkbox" id="cells"> Raw cells</label>
+
+          <p class="group-title span">Overlay</p>
+          <div class="seg span" id="ovSeg">
+            <button data-i="0">None</button>
+            <button data-i="1" aria-pressed="true">Texture</button>
+            <button data-i="2">Edges</button>
+            <button data-i="3">Diff</button>
+          </div>
+          <div class="ctl">
+            <label for="edgeMix">Strength</label><span class="val" id="edgeMixV">0.60</span>
+            <input type="range" id="edgeMix" min="0" max="1" step="0.01" value="0.6">
+          </div>
+
+          <p class="group-title span">Shift &amp; dip search</p>
+          <div class="ctl">
+            <label for="minShift">Ignore shifts below</label><span class="val" id="minShiftV">8 px</span>
+            <input type="range" id="minShift" min="2" max="120" step="1" value="8">
+          </div>
+          <div class="ctl" title="How far a dip must stand out from its surroundings to count; the earliest one that clears the bar wins">
+            <label for="prom">Dip prominence</label><span class="val" id="promV">0.60</span>
+            <input type="range" id="prom" min="0.02" max="0.9" step="0.01" value="0.6">
+          </div>
+          <div class="ctl">
+            <label for="smooth">Curve smoothing</label><span class="val" id="smoothV">3</span>
+            <input type="range" id="smooth" min="1" max="21" step="2" value="3">
+          </div>
+
+          <p class="group-title span">Difference map</p>
+          <div class="ctl">
+            <label for="gain">Sigmoid gain k</label><span class="val" id="gainV">12</span>
+            <input type="range" id="gain" min="1" max="40" step="0.5" value="12">
+          </div>
+          <div class="ctl">
+            <label for="center">Sigmoid centre c</label><span class="val" id="centerV">0.45</span>
+            <input type="range" id="center" min="0.02" max="0.98" step="0.01" value="0.45">
+          </div>
+          <div class="ctl">
+            <label for="sigma">Gaussian blur σ</label><span class="val" id="sigmaV">1.2</span>
+            <input type="range" id="sigma" min="0" max="6" step="0.1" value="1.2">
+          </div>
+          <div class="ctl">
+            <label for="radius">Morphology radius</label><span class="val" id="radiusV">2 px</span>
+            <input type="range" id="radius" min="1" max="10" step="1" value="2">
+          </div>
+          <label class="toggle span"><input type="checkbox" id="invert"> Show the difference map inverted</label>
+        </div>
+      </div>
+    </div>
+  </aside>
+</div>
+
+<!-- ============ auxiliary, two narrow columns ============ -->
+<section class="aux">
+  <h2>Behind the map</h2>
+  <div class="aux-grid">
+    <div class="card">
+      <div class="card-head"><span class="card-title">Pattern lock</span></div>
+      <div class="lock-canvas-holder" id="lockHolder"><div class="placeholder">no image loaded</div></div>
+      <div class="card-body tight">
+        <p class="note">Red is the image, cyan is the same image slid left by the shift. Where the pattern matches they cancel to grey; only the hidden surface breaks colour.</p>
+      </div>
+    </div>
+    <div class="card">
+      <div class="card-head"><span class="card-title">Subtract and clean</span><span class="card-aside" id="stageMeta"></span></div>
+      <div class="tabs" id="tabs" role="tablist"></div>
+      <div class="stage-view" id="stageView"><div class="placeholder">nothing to show yet</div></div>
+      <div class="film" id="film"></div>
+      <div class="stage-foot">
+        <span class="stage-desc" id="stageDesc">Load an image to run the pipeline.</span>
+        <button class="btn" id="saveBtn" disabled>Save PNG</button>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section class="method">
+  <h2>How it decodes</h2>
+  <ol>
+    <li>
+      <h3>Find the period</h3>
+      <p>The image is slid over itself one pixel at a time, up to half its width. For every shift, the RMS difference over the overlapping region is measured — an area-normalised L2 distance, so wide and narrow overlaps compare fairly. The first prominent dip is the pattern period.</p>
+    </li>
+    <li>
+      <h3>Subtract the copy</h3>
+      <p>At that shift the background pattern cancels out. The residual <code>|I(x) − I(x−s)|</code> is taken across RGB, min-max normalised, pushed through a sigmoid, blurred, then opened and closed.</p>
+    </li>
+    <li>
+      <h3>Measure it cell by cell</h3>
+      <p>One shift only separates near from far. For the levels between, the dip search runs again in a grid of square cells. Each cell is matched at its own size — the summation region is the cell while the lag reaches across the row, so a cell never has to be as wide as a period.</p>
+    </li>
+    <li>
+      <h3>Place it on the image</h3>
+      <p>Depth at scene point X is carried by the pair <code>(X − sep/2, X + sep/2)</code>, so every reading is placed at that pair's midpoint. The texture overlay is pulled back by half a shift for the same reason: the pixel above a surface is not the pixel that encodes it.</p>
+    </li>
+  </ol>
+</section>
+
+<footer>All processing happens in this tab. Nothing is uploaded.</footer>
+</div>
+
+<div class="modal hidden" id="srcModal"><img id="srcBig" alt="Source image, enlarged"></div>
+
+<script>
+"use strict";
+const $ = s => document.querySelector(s);
+const clamp = (v,a,b)=>v<a?a:v>b?b:v;
+const tick = ()=>new Promise(r=>setTimeout(r,0));
+
+const STAGES = [
+  {id:"diff",   name:"Difference", desc:"Raw |I(x) − I(x−s)| magnitude across RGB, displayed scaled to its own maximum."},
+  {id:"norm",   name:"Normalised", desc:"Min-max normalised to [0,1]. The full dynamic range is now in play."},
+  {id:"sigmoid",name:"Sigmoid",    desc:"Sigmoid contrast enhancement. Mid values are pushed toward black or white."},
+  {id:"blur",   name:"Blurred",    desc:"Gaussian blur. Speckle merges into continuous regions."},
+  {id:"open",   name:"Opened",     desc:"Opening — erode then dilate. Isolated bright noise is removed; shapes keep their size."},
+  {id:"close",  name:"Closed",     desc:"Closing on the opened map — dilate then erode. Pinholes and hairline gaps are filled. This is the output."}
+];
+
+const state = {
+  W:0,H:0,data:null,
+  curve:null,maxShift:0,candidates:[],picked:null,
+  shift:0,auto:true,
+  maps:{},sw:0,sh:0,
+  active:"close",busy:false
+};
+
+/* ============ image loading ============ */
+const MAXW=1200, MAXH=900;
+
+async function ingest(source){
+  let iw,ih;
+  if(source instanceof HTMLCanvasElement){iw=source.width;ih=source.height}
+  else {iw=source.naturalWidth;ih=source.naturalHeight}
+  const sc = Math.min(1, MAXW/iw, MAXH/ih);
+  const W=Math.max(8,Math.round(iw*sc)), H=Math.max(8,Math.round(ih*sc));
+  const c=document.createElement("canvas");c.width=W;c.height=H;
+  const ctx=c.getContext("2d",{willReadFrequently:true});
+  ctx.imageSmoothingQuality="high";
+  ctx.drawImage(source,0,0,W,H);
+  state.data=ctx.getImageData(0,0,W,H).data;
+  state.W=W;state.H=H;
+  buildLum();
+
+  const sv=$("#srcCanvas");sv.width=W;sv.height=H;
+  sv.getContext("2d").drawImage(c,0,0);
+  $("#dropWrap").classList.add("hidden");
+  document.querySelector(".wrap").classList.remove("pre");
+  $("#srcView").classList.remove("hidden");
+  $("#srcMeta").textContent = `${W}×${H}` + (sc<1?` · resized from ${iw}×${ih}`:"");
+
+  const ms=$("#minShift");
+  ms.max=Math.max(30,Math.round(W*0.12));
+  ms.value=Math.max(4,Math.round(W*0.012));
+  $("#minShiftV").textContent=ms.value+" px";
+  $("#shiftIn").max=Math.floor(W/2);
+  const gn=$("#gridN");
+  gn.max=gridMax();
+  gn.value=clamp(Math.round(0.85*(+gn.max)),+gn.min,+gn.max);
+  $("#gridNV").textContent=gn.value;
+
+  await measure();
+}
+
+function fileToImage(file){
+  return new Promise((res,rej)=>{
+    const fr=new FileReader();
+    fr.onload=()=>{const im=new Image();im.onload=()=>res(im);im.onerror=rej;im.src=fr.result};
+    fr.onerror=rej; fr.readAsDataURL(file);
+  });
+}
+async function handleFile(f){
+  if(!f||!f.type.startsWith("image/"))return;
+  try{ await ingest(await fileToImage(f)); }
+  catch(e){ $("#stageDesc").textContent="That file could not be read as an image. Try a PNG or JPEG."; }
+}
+
+/* ============ step 1: self-distance curve ============ */
+async function measure(){
+  if(state.busy)return;
+  state.busy=true; setBusy(true);
+  const {data,W,H}=state;
+  const maxShift=Math.max(2,Math.floor(W/2));
+  const stride=Math.max(1,Math.floor(H/240));
+  const rows=[];for(let y=0;y<H;y+=stride)rows.push(y*W*4);
+  const curve=new Float64Array(maxShift+1);
+
+  for(let s=1;s<=maxShift;s++){
+    let sum=0;
+    const so=s*4;
+    for(let r=0;r<rows.length;r++){
+      const base=rows[r], end=base+W*4;
+      for(let i=base+so;i<end;i+=4){
+        const j=i-so;
+        const dr=data[i]-data[j], dg=data[i+1]-data[j+1], db=data[i+2]-data[j+2];
+        sum+=dr*dr+dg*dg+db*db;
+      }
+    }
+    curve[s]=Math.sqrt(sum/(rows.length*(W-s)*3));
+    if((s&31)===0){ $("#bar").style.width=(100*s/maxShift)+"%"; await tick(); }
+  }
+  $("#bar").style.width="100%";
+  state.curve=curve; state.maxShift=maxShift;
+  state.busy=false; setBusy(false);
+  detectDip(true);
+  setTimeout(()=>{$("#bar").style.width="0%"},450);
+}
+
+function smoothCurve(c,win){
+  if(win<=1)return Float64Array.from(c);
+  const n=c.length,out=new Float64Array(n),h=(win-1)>>1;
+  for(let i=1;i<n;i++){
+    let s=0,k=0;
+    for(let d=-h;d<=h;d++){const j=i+d;if(j>=1&&j<n){s+=c[j];k++}}
+    out[i]=s/k;
+  }
+  return out;
+}
+
+function valleyProminence(c,s,lo,hi){
+  const v=c[s];
+  let L=-Infinity,R=-Infinity;
+  for(let i=s-1;i>=lo;i--){ if(c[i]<v)break; if(c[i]>L)L=c[i]; }
+  for(let i=s+1;i<=hi;i++){ if(c[i]<v)break; if(c[i]>R)R=c[i]; }
+  if(L===-Infinity)L=v; if(R===-Infinity)R=v;
+  return Math.min(L,R)-v;
+}
+
+function detectDip(resetAuto){
+  if(!state.curve)return;
+  const raw=state.curve, n=state.maxShift;
+  const sm=smoothCurve(raw,+$("#smooth").value);
+  state.smooth=sm;
+  const lo=clamp(+$("#minShift").value,2,n-2), hi=n-1;
+  let mn=Infinity,mx=-Infinity;
+  for(let s=lo;s<=hi;s++){ if(sm[s]<mn)mn=sm[s]; if(sm[s]>mx)mx=sm[s]; }
+  const range=(mx-mn)||1;
+  const need=+$("#prom").value;
+
+  const cands=[];
+  for(let s=lo+1;s<hi;s++){
+    if(sm[s]<=sm[s-1] && sm[s]<=sm[s+1] && !(sm[s]===sm[s-1]&&sm[s]===sm[s+1])){
+      const p=valleyProminence(sm,s,lo,hi)/range;
+      if(p>0.01) cands.push({s,p,v:sm[s]});
+    }
+  }
+  // collapse near-duplicate minima
+  const merged=[];
+  for(const c of cands){
+    const last=merged[merged.length-1];
+    if(last && c.s-last.s<=2){ if(c.v<last.v) merged[merged.length-1]=c; }
+    else merged.push(c);
+  }
+  state.candidates=merged;
+  // Earliest dip that stands out by at least `need`, else the most prominent one.
+  // Taking the earliest keeps the fundamental ahead of its harmonics: 2P and 3P are
+  // nearly as prominent as P but arrive later. The bar has to be high enough that a
+  // shallow spurious dip in front of the real period cannot clear it.
+  const first=merged.find(c=>c.p>=need) || merged.slice().sort((a,b)=>b.p-a.p)[0] || null;
+  state.picked=first;
+
+  if(resetAuto)state.auto=true;
+  if(state.auto) state.shift = first ? first.s : Math.max(1,lo);
+  applyShift();
+}
+
+function applyShift(){
+  const s=clamp(Math.round(state.shift),1,Math.max(1,state.maxShift));
+  state.shift=s;
+  $("#shiftIn").value=s;
+  $("#shiftOut").innerHTML=s+'<span class="u">px</span>';
+  $("#distOut").textContent = state.curve? state.curve[s].toFixed(2) : "—";
+  $("#plotMeta").textContent = state.auto
+    ? (state.picked? `prominence ${state.picked.p.toFixed(2)}` : "no clear dip")
+    : "manual";
+  state.depthDirty=true;
+  drawPlot(); drawLock(); schedulePipeline();
+}
+
+/* ============ step 2+3: pipeline ============ */
+function minmax(src){
+  let mn=Infinity,mx=-Infinity;
+  for(let i=0;i<src.length;i++){const v=src[i];if(v<mn)mn=v;if(v>mx)mx=v}
+  const d=(mx-mn)||1,out=new Float32Array(src.length);
+  for(let i=0;i<src.length;i++)out[i]=(src[i]-mn)/d;
+  return out;
+}
+function sigmoidMap(src,k,c){
+  const lo=1/(1+Math.exp(k*c)), hi=1/(1+Math.exp(-k*(1-c))), d=(hi-lo)||1;
+  const out=new Float32Array(src.length);
+  for(let i=0;i<src.length;i++) out[i]=clamp((1/(1+Math.exp(-k*(src[i]-c)))-lo)/d,0,1);
+  return out;
+}
+function gaussBlur(src,w,h,sigma){
+  if(sigma<=0.01)return Float32Array.from(src);
+  const r=Math.max(1,Math.ceil(sigma*3)),len=2*r+1,k=new Float32Array(len);
+  let sum=0;
+  for(let i=-r;i<=r;i++){const v=Math.exp(-(i*i)/(2*sigma*sigma));k[i+r]=v;sum+=v}
+  for(let i=0;i<len;i++)k[i]/=sum;
+  const tmp=new Float32Array(w*h),out=new Float32Array(w*h);
+  for(let y=0;y<h;y++){const row=y*w;
+    for(let x=0;x<w;x++){let a=0;
+      for(let i=-r;i<=r;i++)a+=k[i+r]*src[row+clamp(x+i,0,w-1)];
+      tmp[row+x]=a;}}
+  for(let x=0;x<w;x++){
+    for(let y=0;y<h;y++){let a=0;
+      for(let i=-r;i<=r;i++)a+=k[i+r]*tmp[clamp(y+i,0,h-1)*w+x];
+      out[y*w+x]=a;}}
+  return out;
+}
+// sliding-window min/max over one line, O(1) per pixel via a monotonic deque
+let _dq=new Int32Array(0);
+function line(src,off,st,n,r,out,ooff,ost,isMax){
+  if(_dq.length<n)_dq=new Int32Array(n);
+  const dq=_dq; let head=0,tail=0;
+  for(let i=0;i<n+r;i++){
+    if(i<n){
+      const v=src[off+i*st];
+      while(tail>head){const u=src[off+dq[tail-1]*st];if(isMax?u<=v:u>=v)tail--;else break}
+      dq[tail++]=i;
+    }
+    const x=i-r;
+    if(x>=0){
+      while(dq[head]<x-r)head++;
+      out[ooff+x*ost]=src[off+dq[head]*st];
+    }
+  }
+}
+function morph(src,w,h,r,isMax){
+  const tmp=new Float32Array(w*h),out=new Float32Array(w*h);
+  for(let y=0;y<h;y++) line(src,y*w,1,w,r,tmp,y*w,1,isMax);
+  for(let x=0;x<w;x++) line(tmp,x,w,h,r,out,x,w,isMax);
+  return out;
+}
+const erode=(m,w,h,r)=>morph(m,w,h,r,false);
+const dilate=(m,w,h,r)=>morph(m,w,h,r,true);
+
+let pipeQueued=false;
+function schedulePipeline(){
+  if(pipeQueued)return;
+  pipeQueued=true;
+  requestAnimationFrame(()=>{pipeQueued=false;runPipeline()});
+}
+
+function runPipeline(){
+  if(!state.data)return;
+  const {data,W,H}=state, s=state.shift;
+  const w=W-s, h=H;
+  if(w<8){ $("#stageDesc").textContent="Shift is too large — nothing overlaps."; return; }
+
+  const diff=new Float32Array(w*h);
+  let dmax=0;
+  for(let y=0;y<h;y++){
+    const row=y*W*4, o=y*w;
+    for(let x=0;x<w;x++){
+      const i=row+(x+s)*4, j=row+x*4;
+      const dr=data[i]-data[j], dg=data[i+1]-data[j+1], db=data[i+2]-data[j+2];
+      const v=Math.sqrt(dr*dr+dg*dg+db*db);
+      diff[o+x]=v; if(v>dmax)dmax=v;
+    }
+  }
+  const r=+$("#radius").value;
+  const norm=minmax(diff);
+  const sig=sigmoidMap(norm,+$("#gain").value,+$("#center").value);
+  const blur=gaussBlur(sig,w,h,+$("#sigma").value);
+  const opened=dilate(erode(blur,w,h,r),w,h,r);
+  const closed=erode(dilate(opened,w,h,r),w,h,r);
+
+  state.maps={diff,norm,sigmoid:sig,blur,open:opened,close:closed};
+  state.diffScale=1/(dmax||1);
+  state.sw=w;state.sh=h;
+  $("#stageMeta").textContent=`${w}×${h} · shift ${s} px`;
+  $("#saveBtn").disabled=false;
+  renderStages();
+  if(state.depthDirty){state.depthDirty=false;scanDepth()}
+  else if(state.depthUp)compositeDepth();
+}
+
+function paint(canvas,map,w,h,scale){
+  canvas.width=w;canvas.height=h;
+  const ctx=canvas.getContext("2d");
+  const id=ctx.createImageData(w,h), d=id.data;
+  const inv=$("#invert").checked;
+  for(let i=0,p=0;i<w*h;i++,p+=4){
+    let v=map[i]*scale; v=v<0?0:v>1?1:v; if(inv)v=1-v;
+    const b=(v*255)|0;
+    d[p]=b;d[p+1]=b;d[p+2]=b;d[p+3]=255;
+  }
+  ctx.putImageData(id,0,0);
+}
+
+function paintThumb(canvas,map,w,h,tw,th,scale){
+  canvas.width=tw;canvas.height=th;
+  const ctx=canvas.getContext("2d");
+  const id=ctx.createImageData(tw,th),d=id.data;
+  const inv=$("#invert").checked;
+  for(let ty=0;ty<th;ty++){
+    const row=Math.min(h-1,(ty*h/th)|0)*w;
+    for(let tx=0;tx<tw;tx++){
+      let v=map[row+Math.min(w-1,(tx*w/tw)|0)]*scale;
+      v=v<0?0:v>1?1:v; if(inv)v=1-v;
+      const p=(ty*tw+tx)*4,b=(v*255)|0;
+      d[p]=b;d[p+1]=b;d[p+2]=b;d[p+3]=255;
+    }
+  }
+  ctx.putImageData(id,0,0);
+}
+
+function renderStages(){
+  const {sw:w,sh:h}=state;
+  const view=$("#stageView"); view.innerHTML="";
+  const big=document.createElement("canvas"); view.appendChild(big);
+  const st=STAGES.find(x=>x.id===state.active);
+  paint(big,state.maps[state.active],w,h,state.active==="diff"?state.diffScale:1);
+  $("#stageDesc").textContent=st.desc;
+  document.querySelectorAll(".tab").forEach(t=>t.setAttribute("aria-selected",String(t.dataset.id===state.active)));
+
+  const film=$("#film"); film.innerHTML="";
+  const tw=Math.min(w,220), th=Math.max(1,Math.round(h*tw/w));
+  for(const stg of STAGES){
+    const b=document.createElement("button");
+    b.setAttribute("aria-current",String(stg.id===state.active));
+    b.title=stg.name;
+    const cv=document.createElement("canvas");
+    paintThumb(cv,state.maps[stg.id],w,h,tw,th,stg.id==="diff"?state.diffScale:1);
+    const lab=document.createElement("span");lab.textContent=stg.name;
+    b.appendChild(cv);b.appendChild(lab);
+    b.onclick=()=>{state.active=stg.id;renderStages()};
+    film.appendChild(b);
+  }
+}
+
+/* ============ plot ============ */
+function drawPlot(){
+  const cv=$("#plot"),holder=cv.parentElement;
+  const dpr=Math.min(2,window.devicePixelRatio||1);
+  const cssW=holder.clientWidth||600, cssH=150;
+  cv.width=cssW*dpr;cv.height=cssH*dpr;cv.style.height=cssH+"px";
+  const g=cv.getContext("2d");g.setTransform(dpr,0,0,dpr,0,0);
+  g.clearRect(0,0,cssW,cssH);
+  if(!state.curve){
+    g.fillStyle="#6d8b87";g.font='11px "IBM Plex Mono",monospace';g.textAlign="center";
+    g.fillText("waiting for an image",cssW/2,cssH/2);return;
+  }
+  const c=state.smooth||state.curve, n=state.maxShift;
+  const L=42,R=14,T=12,B=22, pw=cssW-L-R, ph=cssH-T-B;
+  const lo=clamp(+$("#minShift").value,2,n-2);
+  let mn=Infinity,mx=-Infinity;
+  for(let s=1;s<=n;s++){if(c[s]<mn)mn=c[s];if(c[s]>mx)mx=c[s]}
+  const pad=(mx-mn)*0.08||1; mn-=pad; mx+=pad;
+  const X=s=>L+(s-1)/(n-1)*pw, Y=v=>T+ph-(v-mn)/(mx-mn)*ph;
+
+  // grid
+  g.strokeStyle="#1f4844";g.lineWidth=1;g.font='10px "IBM Plex Mono",monospace';g.fillStyle="#6d8b87";
+  const stepGuess=Math.pow(10,Math.floor(Math.log10(n/5)));
+  const step=[1,2,5,10].map(m=>m*stepGuess).find(v=>n/v<=8)||stepGuess*10;
+  g.textAlign="center";g.textBaseline="top";
+  for(let s=0;s<=n;s+=step){
+    if(s<1)continue;
+    const x=X(s);
+    g.beginPath();g.moveTo(x,T);g.lineTo(x,T+ph);g.stroke();
+    g.fillText(String(s),x,T+ph+7);
+  }
+  // masked-out zone
+  g.fillStyle="rgba(12,36,34,.72)";g.fillRect(L,T,X(lo)-L,ph);
+  g.strokeStyle="#2b5a55";g.beginPath();g.moveTo(X(lo),T);g.lineTo(X(lo),T+ph);g.stroke();
+
+  // axis label
+  g.save();g.translate(11,T+ph/2);g.rotate(-Math.PI/2);
+  g.textAlign="center";g.textBaseline="middle";g.fillStyle="#6d8b87";
+  g.fillText("RMS diff",0,0);g.restore();
+
+  // curve
+  g.beginPath();
+  for(let s=1;s<=n;s++){const x=X(s),y=Y(c[s]); s===1?g.moveTo(x,y):g.lineTo(x,y)}
+  g.strokeStyle="#93aca8";g.lineWidth=1.4;g.lineJoin="round";g.stroke();
+  g.lineTo(X(n),T+ph);g.lineTo(X(1),T+ph);g.closePath();
+  g.fillStyle="rgba(147,172,168,.10)";g.fill();
+
+  // candidates
+  for(const cd of state.candidates){
+    const x=X(cd.s),y=Y(cd.v);
+    g.strokeStyle="#5cc9cc";g.lineWidth=1.5;
+    g.beginPath();g.moveTo(x,y+3);g.lineTo(x,y+9);g.stroke();
+  }
+  // selection
+  const sx=X(state.shift);
+  g.strokeStyle="#dda63f";g.lineWidth=1.5;
+  g.beginPath();g.moveTo(sx,T);g.lineTo(sx,T+ph);g.stroke();
+  g.fillStyle="#dda63f";
+  g.beginPath();g.arc(sx,Y(c[state.shift]),3.4,0,7);g.fill();
+  g.font='600 11px "IBM Plex Mono",monospace';g.textBaseline="top";
+  g.textAlign = sx>cssW-70?"right":"left";
+  g.fillText(state.shift+" px", sx+(sx>cssW-70?-6:6), T+2);
+}
+
+/* ============ lock strip ============ */
+function drawLock(){
+  const holder=$("#lockHolder");
+  if(!state.data){holder.innerHTML='<div class="placeholder">no image loaded</div>';return}
+  const {data,W,H}=state, s=state.shift;
+  const bandH=Math.min(H,Math.max(80,Math.round(H*0.34)));
+  const y0=Math.max(0,Math.round((H-bandH)/2));
+  const w=Math.max(1,W-s);
+  let cv=holder.querySelector("canvas");
+  if(!cv){holder.innerHTML="";cv=document.createElement("canvas");holder.appendChild(cv)}
+  cv.width=w;cv.height=bandH;
+  const g=cv.getContext("2d");
+  const id=g.createImageData(w,bandH),d=id.data;
+  for(let y=0;y<bandH;y++){
+    const row=(y+y0)*W*4, o=y*w*4;
+    for(let x=0;x<w;x++){
+      const i=row+(x+s)*4, j=row+x*4;
+      const a=(data[i]*.299+data[i+1]*.587+data[i+2]*.114);
+      const b=(data[j]*.299+data[j+1]*.587+data[j+2]*.114);
+      const p=o+x*4;
+      d[p]=a;d[p+1]=b;d[p+2]=b;d[p+3]=255;
+    }
+  }
+  g.putImageData(id,0,0);
+  // caliper
+  const pad=Math.round(Math.min(28,bandH*0.18));
+  const x1=pad, x2=pad+s, yb=bandH-pad*0.55;
+  g.lineWidth=Math.max(1.5,w/700);
+  g.strokeStyle="#e2564a";g.beginPath();g.moveTo(x1,yb-12);g.lineTo(x1,yb+6);g.stroke();
+  g.strokeStyle="#5cc9cc";g.beginPath();g.moveTo(x2,yb-12);g.lineTo(x2,yb+6);g.stroke();
+  g.strokeStyle="rgba(238,231,214,.85)";g.beginPath();g.moveTo(x1,yb);g.lineTo(x2,yb);g.stroke();
+  const fs=Math.max(11,Math.round(w/58));
+  g.font=`600 ${fs}px "IBM Plex Mono",monospace`;
+  g.textAlign="center";g.textBaseline="bottom";
+  g.fillStyle="rgba(0,0,0,.6)";
+  const t=s+" px", tw=g.measureText(t).width;
+  g.fillRect(x1+(x2-x1)/2-tw/2-5, yb-fs-9, tw+10, fs+6);
+  g.fillStyle="#eee7d6";g.fillText(t,x1+(x2-x1)/2,yb-4);
+}
+
+/* ============ demo image ============ */
+function buildDemo(){
+  const W=760,H=470;
+  const depth=new Float32Array(W*H);
+  for(let y=0;y<H;y++)for(let x=0;x<W;x++){
+    const u=x/W,v=y/H;
+    let d=0.08+0.17*u;                                   // floor, tilted away
+    const r=Math.hypot((u-0.30)*1.85,(v-0.44)*1.85);     // dome
+    if(r<0.30)d=Math.max(d,0.40+0.52*Math.sqrt(1-(r/0.30)**2));
+    const c=Math.hypot((u-0.72)*2.0,(v-0.63)*2.0);       // cone
+    if(c<0.26)d=Math.max(d,0.34+0.56*(1-c/0.26));
+    if(u>0.46&&u<0.62&&v>0.12&&v<0.30)d=Math.max(d,0.72); // flat slab
+    depth[y*W+x]=clamp(d,0,1);
+  }
+  // borders: scene points where depth steps, so the texture carries a visible marker
+  const border=new Uint8Array(W*H);
+  for(let y=1;y<H-1;y++)for(let x=1;x<W-1;x++){
+    let mn=1,mx=0;
+    for(let dy=-1;dy<=1;dy++)for(let dx=-1;dx<=1;dx++){
+      const v=depth[(y+dy)*W+(x+dx)];if(v<mn)mn=v;if(v>mx)mx=v;
+    }
+    if(mx-mn>0.05)border[y*W+x]=1;
+  }
+  const E=104,amp=28;
+  const pal=[[12,36,34],[27,90,85],[92,201,204],[226,86,74],[221,166,63],[238,231,214],[255,0,208]];
+  const BORDER=6;
+  const same=new Int32Array(W),colr=new Int32Array(W);
+  const cv=document.createElement("canvas");cv.width=W;cv.height=H;
+  const ctx=cv.getContext("2d"),id=ctx.createImageData(W,H),o=id.data;
+  for(let y=0;y<H;y++){
+    for(let x=0;x<W;x++)same[x]=x;
+    // depth at x links the pair (x - sep/2, x + sep/2) — the standard symmetric rule
+    for(let x=0;x<W;x++){
+      const sep=E-Math.round(depth[y*W+x]*amp);
+      let left=x-((sep+(sep&1))>>1),right=left+sep;
+      if(left>=0&&right<W){
+        let l=same[left];
+        while(l!==left&&l!==right){
+          if(l<right){left=l;l=same[left]}
+          else{same[left]=right;left=right;right=l;l=same[left]}
+        }
+        same[left]=right;
+      }
+    }
+    for(let x=W-1;x>=0;x--)colr[x]= same[x]===x ? (Math.random()*BORDER)|0 : colr[same[x]];
+    // paint the pair that encodes each border point — both members, so the pair still matches
+    for(let x=0;x<W;x++)if(border[y*W+x]){
+      const sep=E-Math.round(depth[y*W+x]*amp);
+      const left=x-((sep+(sep&1))>>1),right=left+sep;
+      if(left>=0&&right<W)colr[left]=BORDER;   // left member only: one unambiguous outline
+    }
+    for(let x=0;x<W;x++){const p=(y*W+x)*4,c=pal[colr[x]];o[p]=c[0];o[p+1]=c[1];o[p+2]=c[2];o[p+3]=255}
+  }
+  ctx.putImageData(id,0,0);
+  return cv;
+}
+
+/* ============ depth field: per-cell period → blended depth ============ */
+const CMAPS=[
+  [[10,32,30],[24,84,80],[92,201,204],[238,231,214],[221,166,63],[226,86,74]],
+  [[68,1,84],[65,68,135],[42,120,142],[34,168,132],[122,209,81],[253,231,37]],
+  [[6,6,6],[250,250,250]]
+];
+let cmapIdx=2, LUT=null, ovMode=1;
+function rampLUT(i){
+  const st=CMAPS[i],n=st.length-1,l=new Uint8Array(768);
+  for(let k=0;k<256;k++){
+    const t=k/255*n,j=Math.min(n-1,Math.floor(t)),f=t-j;
+    for(let c=0;c<3;c++)l[k*3+c]=Math.round(st[j][c]+(st[j+1][c]-st[j][c])*f);
+  }
+  return l;
+}
+function drawRamp(){
+  const cv=$("#ramp"),g=cv.getContext("2d");
+  const id=g.createImageData(cv.width,1),d=id.data;
+  for(let x=0;x<cv.width;x++){
+    const o=Math.round(x/(cv.width-1)*255)*3,p=x*4;
+    d[p]=LUT[o];d[p+1]=LUT[o+1];d[p+2]=LUT[o+2];d[p+3]=255;
+  }
+  const t=document.createElement("canvas");t.width=cv.width;t.height=1;
+  t.getContext("2d").putImageData(id,0,0);
+  g.clearRect(0,0,cv.width,cv.height);
+  g.drawImage(t,0,0,cv.width,cv.height);
+}
+
+function buildLum(){
+  const {data,W,H}=state,l=new Float32Array(W*H);
+  for(let i=0,p=0;i<W*H;i++,p+=4)l[i]=data[p]*.299+data[p+1]*.587+data[p+2]*.114;
+  state.lum=l;
+}
+function gridMax(){return Math.max(4,Math.floor(Math.min(state.W,state.H)/2))}
+function makeGrid(){
+  const {W,H}=state;
+  const N=clamp(Math.round(+$("#gridN").value)||30,2,gridMax());
+  // one square cell size, taken from the short side; both counts follow from it,
+  // and the grid is centred so every cell is exactly cell x cell
+  const cell=Math.min(W,H)/N;
+  const cols=Math.max(2,Math.round(W/cell)),rows=Math.max(2,Math.round(H/cell));
+  const ox=(W-cols*cell)/2,oy=(H-rows*cell)/2;
+  const xs=new Int32Array(cols+1),ys=new Int32Array(rows+1);
+  for(let i=0;i<=cols;i++)xs[i]=clamp(Math.round(ox+i*cell),0,W);
+  for(let j=0;j<=rows;j++)ys[j]=clamp(Math.round(oy+j*cell),0,H);
+  const cx=new Float32Array(cols),cy=new Float32Array(rows);
+  for(let i=0;i<cols;i++)cx[i]=ox+(i+0.5)*cell;
+  for(let j=0;j<rows;j++)cy[j]=oy+(j+0.5)*cell;
+  state.grid={cols,rows,xs,ys,cx,cy,cell,ox,oy};
+}
+
+async function scanDepth(){
+  if(!state.lum||state.scanning)return;
+  state.scanning=true;
+  const {W,H,lum}=state,P=state.shift;
+  makeGrid();
+  const {cols,rows,xs,ys,cx,cy,cell,ox,oy}=state.grid;
+  const bp=+$("#band").value/100;
+  const s0=Math.max(2,Math.round(P*(1-bp)));
+  const s1=Math.min(Math.floor(W/2),Math.max(s0+2,Math.round(P*(1+bp))));
+  const nS=s1-s0+1,nC=cols*rows;
+  // each cell is matched at its own size: the summation region is the cell, while the
+  // lag reaches across the row, so the window never has to span a period
+  const MINSIDE=14;
+  const side=Math.max(cell*(+$("#win").value),MINSIDE);
+  const halfW=side/2,halfH=side/2;
+  // reduced online — a fine grid would make a full cell x shift table enormous
+  const bestV=new Float32Array(nC).fill(Infinity),bestK=new Int32Array(nC).fill(-1);
+  const bestP=new Float32Array(nC).fill(Infinity),bestN=new Float32Array(nC).fill(Infinity);
+  const prevV=new Float32Array(nC).fill(Infinity);
+  const sumV=new Float64Array(nC),cntV=new Int32Array(nC),wacc=new Float32Array(nC);
+  // vertical window bounds are independent of the cell rows, so snapshot the running
+  // integral at exactly the boundaries the windows ask for
+  const y0a=new Int32Array(rows),y1a=new Int32Array(rows);
+  for(let j=0;j<rows;j++){
+    const a=clamp(Math.round(cy[j]-halfH),0,H),b=clamp(Math.round(cy[j]+halfH),0,H);
+    y0a[j]=a;y1a[j]=b;
+  }
+  // Only a handful of cell-row windows are open at any scanline (window height over cell
+  // spacing), so the integral snapshots live in a small ring instead of one row per
+  // boundary — that keeps them in cache and halves the copying.
+  let RING=1,openNow=0,pa=0,pb=0;
+  for(let y=0;y<=H;y++){
+    while(pb<rows&&y1a[pb]===y){openNow--;pb++}
+    while(pa<rows&&y0a[pa]===y){openNow++;pa++}
+    if(openNow>RING)RING=openNow;
+  }
+  RING+=2;
+  const IW=W+1,run=new Float64Array(IW),ring=new Float64Array(RING*IW);
+  // window bounds depend only on the column and the shift, not on the row
+  const colX0=new Int32Array(cols),colX1=new Int32Array(cols),colOK=new Uint8Array(cols);
+  const invSide2=1/(side*side);
+  for(let k=0;k<nS;k++){
+    const s=s0+k;
+    run.fill(0);
+    // window centred on the compared material: right-member centre is cx + s/2
+    const off=s/2,minSpan=0.6*side;
+    for(let i=0;i<cols;i++){
+      const c=cx[i]+off;
+      const w0=Math.max(0,Math.round(c-halfW)),w1=Math.min(W,Math.round(c+halfW));
+      const x0=Math.max(w0,s);
+      colX0[i]=x0;colX1[i]=w1;colOK[i]=(w1-x0)>=minSpan?1:0;
+    }
+    let jo=0,jc=0;
+    while(jo<rows&&y0a[jo]===0){ring.set(run,(jo%RING)*IW);jo++}
+    for(let y=0;y<H;y++){
+      const rl=y*W;let acc=0;
+      for(let x=s;x<W;x++){const d=lum[rl+x]-lum[rl+x-s];acc+=d*d;run[x+1]+=acc}
+      const yn=y+1;
+      // a window closing here has its whole box available: current run minus its opening snapshot
+      while(jc<rows&&y1a[jc]===yn){
+        const hgt=y1a[jc]-y0a[jc];
+        if(hgt>0){
+          const ao=(jc%RING)*IW,base=jc*cols;
+          for(let i=0;i<cols;i++){
+            const idx=base+i;
+            let v=Infinity;
+            if(colOK[i]){
+              const x0=colX0[i],x1=colX1[i],cnt=(x1-x0)*hgt;
+              if(cnt>=MINSIDE){
+                const sm=run[x1]-run[x0]-ring[ao+x1]+ring[ao+x0];
+                v=Math.sqrt((sm>0?sm:0)/cnt);
+                wacc[idx]+=cnt*invSide2;sumV[idx]+=v;cntV[idx]++;
+              }
+            }
+            if(bestK[idx]===k-1)bestN[idx]=v;
+            if(v<bestV[idx]){bestV[idx]=v;bestK[idx]=k;bestP[idx]=prevV[idx];bestN[idx]=Infinity}
+            prevV[idx]=v;
+          }
+        }
+        jc++;
+      }
+      while(jo<rows&&y0a[jo]===yn){ring.set(run,(jo%RING)*IW);jo++}
+    }
+    if((k&7)===0){$("#dbar").style.width=(100*k/nS)+"%";await tick()}
+  }
+  $("#dbar").style.width="100%";
+  const per=new Float32Array(nC),cf=new Float32Array(nC);
+  for(let c=0;c<nC;c++){
+    const bi=bestK[c],fin=cntV[c],bv=bestV[c];
+    if(bi<0||fin<nS*0.6||!isFinite(bv)){per[c]=s0+nS/2;cf[c]=0;continue}
+    const mean=sumV[c]/fin;
+    let dl=0;
+    if(bi>0&&bi<nS-1){
+      const a=bestP[c],z=bestN[c];
+      if(isFinite(a)&&isFinite(z)){const dn=a-2*bv+z;if(Math.abs(dn)>1e-9)dl=clamp(0.5*(a-z)/dn,-.5,.5)}
+    }
+    per[c]=s0+bi+dl;
+    let raw=mean>1e-6?(mean-bv)/mean:0;
+    if(bi===0||bi===nS-1)raw*=0.2;
+    cf[c]=raw*clamp(wacc[c]/nS,0,1);
+  }
+  state.cellConfRaw=Float32Array.from(cf);
+  const sorted=Float32Array.from(cf).sort();
+  const q=t=>sorted[clamp(Math.round(t*(nC-1)),0,nC-1)];
+  const lo=q(0.05),rg=(q(0.95)-lo)||1;
+  for(let c=0;c<nC;c++)cf[c]=clamp((cf[c]-lo)/rg,0,1);
+  state.cellPeriod=per;state.cellConf=cf;
+  state.autoFloor=autoFloorValue(per,cf,cols,rows,cell);
+  $("#gridMeta").textContent=`${cols}×${rows} cells of ${cell.toFixed(1)} px · window ${Math.round(side)}×${Math.round(side)} px · band ${s0}–${s1} px`;
+  state.scanning=false;
+  setTimeout(()=>{$("#dbar").style.width="0%"},400);
+  blendDepth();
+}
+
+// Adaptive floor. Two things go wrong at opposite ends and neither test sees both, so
+// run both and take whichever stops first.
+//   CHANGE: how far the depth field has moved from where it started, as a mean shift per
+//   cell against the field's own spread. Catches the subject being deleted, which is what
+//   limits images whose objects sit in low-confidence cells.
+//   ROUGHNESS: the field's total variation. Speckle adds roughness and, further up, so do
+//   the ragged silhouettes you get once boundary cells are gone, so it dips in between.
+//   Catches images whose field barely moves but whose outlines quietly fall apart.
+// Both are measured on fixed working grids in physical pixels, so the answer does not
+// drift with cell size. Capped at 0.80 — past that the result is almost always worse.
+// Calibrated against ten stereograms with hand-picked floors.
+const AUTO_SIGMA_PX=88, AUTO_THRESH=0.223, AUTO_GONE=0.25, AUTO_CAP=0.80;
+const AUTO_TV_SIGMA_PX=8, AUTO_TV_SMOOTH=0.10, AUTO_STEP=0.02;
+const AUTO_STEPS=Math.round(0.95/AUTO_STEP), AUTO_SMOOTH_K=Math.round(AUTO_TV_SMOOTH/AUTO_STEP);
+
+function autoSample(per,cf,cols,rows,cell,workPx){
+  const stride=Math.max(1,Math.round(workPx/Math.max(cell,0.5)));
+  const wc=Math.max(4,Math.ceil(cols/stride)),wr=Math.max(4,Math.ceil(rows/stride));
+  const m=wc*wr,P=new Float32Array(m),C=new Float32Array(m);
+  for(let j=0;j<wr;j++)for(let i=0;i<wc;i++){
+    const q=Math.min(rows-1,j*stride)*cols+Math.min(cols-1,i*stride);
+    P[j*wc+i]=per[q];C[j*wc+i]=cf[q];
+  }
+  return {P,C,wc,wr,m,wcell:cell*stride};
+}
+function autoWeights(C,f,w,nu,P){
+  for(let i=0;i<C.length;i++){const c=C[i],v=c<=f?0:(c-f)/((1-f)||1);w[i]=v;nu[i]=v*P[i]}
+}
+// where does the field stop resembling itself?
+function autoChangeFloor(per,cf,cols,rows,cell){
+  const g=autoSample(per,cf,cols,rows,cell,12),{P,C,wc,wr,m}=g;
+  const sig=Math.max(0.6,AUTO_SIGMA_PX/g.wcell);
+  const nu=new Float32Array(m),w=new Float32Array(m);
+  autoWeights(C,0,w,nu,P);
+  const n0=gaussGrid(nu,wc,wr,sig),d0=gaussGrid(w,wc,wr,sig);
+  const base=new Float32Array(m),bv=new Uint8Array(m),vals=[];
+  for(let i=0;i<m;i++)if(d0[i]>1e-6){base[i]=n0[i]/d0[i];bv[i]=1;vals.push(base[i])}
+  const nb=vals.length;
+  if(nb<16)return 0;
+  let mu=0;for(const v of vals)mu+=v;mu/=nb;
+  let va=0;for(const v of vals)va+=(v-mu)*(v-mu);
+  const sd=Math.max(Math.sqrt(va/nb),1e-6);
+  const sorted=Float64Array.from(vals).sort();
+  const q=t=>sorted[clamp(Math.round(t*(nb-1)),0,nb-1)];
+  const gone=AUTO_GONE*Math.max(q(0.98)-q(0.02),1e-6);
+  let best=0;
+  for(let k=1;k<=AUTO_STEPS;k++){
+    const f=k*AUTO_STEP;
+    autoWeights(C,f,w,nu,P);
+    const nf=gaussGrid(nu,wc,wr,sig),df=gaussGrid(w,wc,wr,sig);
+    let acc=0;
+    for(let i=0;i<m;i++){
+      if(!bv[i])continue;
+      if(!(df[i]>1e-6)){acc+=gone;continue}
+      acc+=Math.abs(nf[i]/df[i]-base[i]);
+    }
+    if(acc/nb/sd>AUTO_THRESH)break;
+    best=f;
+  }
+  return best;
+}
+// where is the field smoothest? speckle above it, ragged outlines below
+function autoRoughnessFloor(per,cf,cols,rows,cell){
+  const g=autoSample(per,cf,cols,rows,cell,8),{P,C,wc,wr,m}=g;
+  const sig=Math.max(0.6,AUTO_TV_SIGMA_PX/g.wcell);
+  const nu=new Float32Array(m),w=new Float32Array(m),fld=new Float32Array(m);
+  const tv=new Float64Array(AUTO_STEPS+1);
+  let fallback=0,haveFb=false;
+  for(let k=0;k<=AUTO_STEPS;k++){
+    const f=k*AUTO_STEP;
+    autoWeights(C,f,w,nu,P);
+    const nf=gaussGrid(nu,wc,wr,sig),df=gaussGrid(w,wc,wr,sig);
+    if(!haveFb){
+      const t=[];for(let i=0;i<m;i++)if(df[i]>1e-6)t.push(nf[i]/df[i]);
+      if(t.length){t.sort((a,b)=>a-b);fallback=t[t.length>>1];haveFb=true}
+    }
+    for(let i=0;i<m;i++)fld[i]=df[i]>1e-6?nf[i]/df[i]:fallback;
+    let s=0;
+    for(let y=0;y<wr;y++)for(let x=0;x<wc;x++){
+      const i=y*wc+x;
+      const gx=fld[i+(x+1<wc?1:0)]-fld[i-(x>0?1:0)];
+      const gy=fld[i+(y+1<wr?wc:0)]-fld[i-(y>0?wc:0)];
+      s+=Math.sqrt(gx*gx+gy*gy)*0.5;
+    }
+    tv[k]=s/m;
+  }
+  let bi=0,bv2=Infinity;
+  for(let k=0;k<=AUTO_STEPS;k++){
+    let s=0,n=0;
+    for(let j=-AUTO_SMOOTH_K;j<=AUTO_SMOOTH_K;j++){
+      const q=clamp(k+j,0,AUTO_STEPS);s+=tv[q];n++;
+    }
+    const v=s/n;
+    if(v<bv2){bv2=v;bi=k}
+  }
+  return bi*AUTO_STEP;
+}
+function autoFloorValue(per,cf,cols,rows,cell){
+  const a=autoChangeFloor(per,cf,cols,rows,cell);
+  const b=autoRoughnessFloor(per,cf,cols,rows,cell);
+  return Math.min(a,b,AUTO_CAP);
+}
+function gaussGrid(src,cols,rows,sig){
+  if(sig<=0.05)return Float32Array.from(src);
+  const r=Math.max(1,Math.ceil(sig*3)),k=new Float32Array(2*r+1);
+  let sum=0;
+  for(let i=-r;i<=r;i++){const v=Math.exp(-i*i/(2*sig*sig));k[i+r]=v;sum+=v}
+  for(let i=0;i<k.length;i++)k[i]/=sum;
+  const t=new Float32Array(cols*rows),o=new Float32Array(cols*rows);
+  for(let y=0;y<rows;y++){const row=y*cols;
+    for(let x=0;x<cols;x++){let a=0;
+      for(let i=-r;i<=r;i++){const xx=x+i;if(xx>=0&&xx<cols)a+=k[i+r]*src[row+xx]}
+      t[row+x]=a}}
+  for(let x=0;x<cols;x++)for(let y=0;y<rows;y++){let a=0;
+    for(let i=-r;i<=r;i++){const yy=y+i;if(yy>=0&&yy<rows)a+=k[i+r]*t[yy*cols+x]}
+    o[y*cols+x]=a}
+  return o;
+}
+function fillHoles(f,valid,cols,rows){
+  const out=Float32Array.from(f),v=Uint8Array.from(valid);
+  const nf=new Float32Array(out.length),nv=new Uint8Array(v.length);
+  const cap=Math.max(60,Math.ceil(cols/2));
+  for(let pass=0;pass<cap;pass++){
+    let filled=0;
+    nf.set(out);nv.set(v);
+    for(let y=0;y<rows;y++)for(let x=0;x<cols;x++){
+      const i=y*cols+x;if(v[i])continue;
+      let s=0,n=0;
+      for(let dy=-1;dy<=1;dy++)for(let dx=-1;dx<=1;dx++){
+        const yy=y+dy,xx=x+dx;if(yy<0||yy>=rows||xx<0||xx>=cols)continue;
+        const j=yy*cols+xx;if(v[j]){s+=out[j];n++}
+      }
+      if(n){nf[i]=s/n;nv[i]=1;filled++}
+    }
+    out.set(nf);v.set(nv);
+    if(!filled)break;
+  }
+  return out;
+}
+function blendDepth(){
+  if(!state.cellPeriod)return;
+  const {cols,rows}=state.grid,n=cols*rows;
+  const fl=+$("#floor").value,sig=+$("#blend").value;
+  const auto=$("#autoFloor").checked&&state.autoFloor!=null;
+  const f=auto?state.autoFloor:fl;
+  if(auto)$("#floor").value=f;
+  const w=new Float32Array(n),nu=new Float32Array(n),on=new Float32Array(n).fill(1);
+  let any=false;
+  for(let i=0;i<n;i++){
+    const c=state.cellConf[i],v=c<=f?0:(c-f)/((1-f)||1);
+    w[i]=v;nu[i]=v*state.cellPeriod[i];
+    if(v>0)any=true;
+  }
+  $("#floorV").textContent=(auto?"auto ":"")+f.toFixed(2);
+  if(!any){
+    $("#depthView").innerHTML='<div class="placeholder">no cells clear the confidence floor</div>';
+    $("#saveDepth").disabled=true;return;
+  }
+  const num=gaussGrid(nu,cols,rows,sig),den=gaussGrid(w,cols,rows,sig),cnt=gaussGrid(on,cols,rows,sig);
+  // the fade reads raw confidence, not the floored weights: a cell the floor drops is
+  // filled in from its neighbours, so it has a value — it is not an unknown region
+  const rawc=gaussGrid(state.cellConf,cols,rows,sig);
+  const field=new Float32Array(n),conf=new Float32Array(n),valid=new Uint8Array(n);
+  for(let i=0;i<n;i++){
+    conf[i]=cnt[i]>1e-6?rawc[i]/cnt[i]:0;
+    if(den[i]>1e-6){field[i]=num[i]/den[i];valid[i]=1}
+  }
+  state.field=fillHoles(field,valid,cols,rows);
+  state.confField=conf;
+  upsampleDepth();
+}
+
+/* separable Catmull-Rom: grid → full resolution */
+function crw(t,o,w){
+  const t2=t*t,t3=t2*t;
+  w[o]=-0.5*t3+t2-0.5*t;
+  w[o+1]=1.5*t3-2.5*t2+1;
+  w[o+2]=-1.5*t3+2*t2+0.5*t;
+  w[o+3]=0.5*t3-0.5*t2;
+}
+function resample(F,cols,rows,w,h,ox,oy,cell){
+  const xi=new Int32Array(w*4),xw=new Float32Array(w*4);
+  for(let x=0;x<w;x++){
+    const gx=(x+0.5-ox)/cell-0.5,i=Math.floor(gx);
+    crw(gx-i,x*4,xw);
+    for(let k=0;k<4;k++)xi[x*4+k]=clamp(i-1+k,0,cols-1);
+  }
+  const tmp=new Float32Array(rows*w);
+  for(let j=0;j<rows;j++){const row=j*cols,o=j*w;
+    for(let x=0;x<w;x++){const q=x*4;
+      tmp[o+x]=xw[q]*F[row+xi[q]]+xw[q+1]*F[row+xi[q+1]]+xw[q+2]*F[row+xi[q+2]]+xw[q+3]*F[row+xi[q+3]]}}
+  const out=new Float32Array(w*h),yw=new Float32Array(4);
+  for(let y=0;y<h;y++){
+    const gy=(y+0.5-oy)/cell-0.5,j=Math.floor(gy);
+    crw(gy-j,0,yw);
+    const r0=clamp(j-1,0,rows-1)*w,r1=clamp(j,0,rows-1)*w,r2=clamp(j+1,0,rows-1)*w,r3=clamp(j+2,0,rows-1)*w;
+    const o=y*w;
+    for(let x=0;x<w;x++)out[o+x]=yw[0]*tmp[r0+x]+yw[1]*tmp[r1+x]+yw[2]*tmp[r2+x]+yw[3]*tmp[r3+x];
+  }
+  return out;
+}
+function depthEdges(D,w,h){
+  const g=new Float32Array(w*h);
+  for(let y=1;y<h-1;y++){const o=y*w;
+    for(let x=1;x<w-1;x++){
+      const i=o+x,gx=D[i+1]-D[i-1],gy=D[i+w]-D[i-w];
+      g[i]=Math.sqrt(gx*gx+gy*gy);
+    }}
+  const samp=[];
+  for(let i=0;i<g.length;i+=61)if(g[i]>0)samp.push(g[i]);
+  samp.sort((a,b)=>a-b);
+  const hi=samp.length?samp[Math.round(0.97*(samp.length-1))]:0;
+  const k=1/(hi||1);
+  for(let i=0;i<g.length;i++){const t=clamp(g[i]*k,0,1);g[i]=t*t}
+  return g;
+}
+function upsampleDepth(){
+  if(!state.field||!state.grid)return;
+  const {W,H}=state,w=W,h=H;
+  const {cols,rows,cell,ox,oy}=state.grid;
+  const raw=$("#cells").checked;
+  const F=raw?state.cellPeriod:state.field;
+  const C=raw?state.cellConf:state.confField;
+  const fl=+$("#floor").value;
+  const vals=[];
+  for(let i=0;i<F.length;i++)if(C[i]>0.001&&isFinite(F[i]))vals.push(F[i]);
+  if(!vals.length)return;
+  vals.sort((a,b)=>a-b);
+  const q=t=>vals[clamp(Math.round(t*(vals.length-1)),0,vals.length-1)];
+  const pLo=q(0.02),pHi=q(0.98),span=(pHi-pLo)||1;
+  state.pNear=pLo;state.pFar=pHi;
+  let up,al;
+  const pu=new Float32Array(w*h);
+  if(raw){
+    up=new Float32Array(w*h);al=new Float32Array(w*h);
+    for(let y=0;y<h;y++){
+      const j=clamp(Math.floor((y+0.5-oy)/cell),0,rows-1),row=j*cols,o=y*w;
+      for(let x=0;x<w;x++){
+        const i=clamp(Math.floor((x+0.5-ox)/cell),0,cols-1);
+        up[o+x]=clamp((pHi-F[row+i])/span,0,1);
+        pu[o+x]=F[row+i];
+        al[o+x]=C[row+i]<=fl?0:1;
+      }
+    }
+  }else{
+    const f=resample(F,cols,rows,w,h,ox,oy,cell),c=resample(C,cols,rows,w,h,ox,oy,cell);
+    up=new Float32Array(w*h);al=new Float32Array(w*h);
+    for(let i=0;i<w*h;i++){up[i]=clamp((pHi-f[i])/span,0,1);pu[i]=f[i];al[i]=clamp(c[i]*4,0,1)}
+  }
+  state.depthUp=up;state.alphaUp=al;state.perUp=pu;state.duw=w;state.duh=h;
+  state.edgeDepth=ovMode===2?depthEdges(up,w,h):null;
+  compositeDepth();
+}
+function compositeDepth(){
+  if(!state.depthUp)return;
+  const w=state.duw,h=state.duh,view=$("#depthView");
+  let cv=view.querySelector("canvas");
+  if(!cv){view.innerHTML="";cv=document.createElement("canvas");view.appendChild(cv)}
+  cv.width=w;cv.height=h;
+  const ctx=cv.getContext("2d"),id=ctx.createImageData(w,h),d=id.data;
+  if(!LUT)LUT=rampLUT(cmapIdx);
+  const em=+$("#edgeMix").value,dim=$("#dim").checked;
+  const D=state.depthUp,A=state.alphaUp;
+  const PU=(ovMode===1&&state.perUp&&state.perUp.length===w*h)?state.perUp:null;
+  // the difference map is indexed by the left member of each pair, so it has to be
+  // pushed right by half a shift to sit over the same image coordinates as the depth
+  let ov=null,ovW=w,ovOff=0,tex=null;
+  if(ovMode===1){tex=state.data;ovOff=Math.round(state.shift/2)}    // strength does not apply
+  if(em>0){
+    if(ovMode===2)ov=state.edgeDepth;
+    else if(ovMode===3&&state.maps.close){ov=state.maps.close;ovW=state.sw;ovOff=Math.round(state.shift/2)}
+  }
+  for(let y=0;y<h;y++){
+    const row=y*w,orow=y*ovW;
+    for(let x=0;x<w;x++){
+      const i=row+x,p=i*4,o=((D[i]*255)|0)*3;
+      let r=LUT[o],g=LUT[o+1],b=LUT[o+2];
+      if(dim){const a=A[i];r=18+(r-18)*a;g=18+(g-18)*a;b=18+(b-18)*a}
+      if(tex){
+        // scene point x is carried by the source pixels x±sep/2, never by x itself, so
+        // the texture is pulled back by half a period. sep is the LOCAL period, which is
+        // exactly what the depth field holds — using the global shift instead leaves the
+        // texture off by (shift-sep)/2 anywhere the depth is not at the background level.
+        // multiply rather than blend: the ramp already carries the depth, so it sets the
+        // lightness of the texture and masks it at the same time — no grey wash on top
+        const sx=x-(PU?Math.round(PU[i]*0.5):ovOff);
+        if(sx>=0&&sx<w){
+          const q=(row+sx)*4;
+          r=r*tex[q]/255;g=g*tex[q+1]/255;b=b*tex[q+2]/255;
+        }else{r=g=b=0}
+      }else if(ov){
+        const cxp=x-ovOff;
+        if(cxp>=0&&cxp<ovW){const e=ov[orow+cxp]*em;r+=(255-r)*e;g+=(255-g)*e;b+=(255-b)*e}
+      }
+      d[p]=r;d[p+1]=g;d[p+2]=b;d[p+3]=255;
+    }
+  }
+  ctx.putImageData(id,0,0);
+  drawRamp();
+  $("#rampFar").textContent="far · "+state.pFar.toFixed(1)+" px";
+  $("#rampNear").textContent=state.pNear.toFixed(1)+" px · near";
+  $("#saveDepth").disabled=false;
+}
+let blendQueued=false;
+function scheduleBlend(){
+  if(blendQueued)return;
+  blendQueued=true;
+  requestAnimationFrame(()=>{blendQueued=false;blendDepth()});
+}
+
+/* ============ wiring ============ */
+function setBusy(b){
+  $("#loadBtn").disabled=b; $("#demoBtn").disabled=b;
+  if(b){$("#shiftOut").innerHTML='···<span class="u">px</span>'}
+}
+
+const tabs=$("#tabs");
+for(const s of STAGES){
+  const b=document.createElement("button");
+  b.className="tab";b.setAttribute("role","tab");b.dataset.id=s.id;b.textContent=s.name;
+  b.setAttribute("aria-selected",String(s.id===state.active));
+  b.onclick=()=>{state.active=s.id; if(state.maps.diff)renderStages()};
+  tabs.appendChild(b);
+}
+
+function syncFloor(){
+  const el=$("#floor"),auto=$("#autoFloor").checked;
+  el.disabled=auto;
+  const box=el.closest&&el.closest(".ctl");
+  if(box)box.classList.toggle("off",auto);
+}
+function syncStrength(){
+  const el=$("#edgeMix");
+  el.disabled = ovMode===1||ovMode===0;
+  const box=el.closest&&el.closest(".ctl");
+  if(box)box.classList.toggle("off",el.disabled);
+}
+syncStrength();syncFloor();
+
+const srcModal=$("#srcModal");
+$("#srcView").onclick=()=>{
+  const cv=$("#srcCanvas");
+  if(!cv.width)return;
+  $("#srcBig").src=cv.toDataURL("image/png");
+  srcModal.classList.remove("hidden");
+};
+srcModal.onclick=()=>srcModal.classList.add("hidden");
+window.addEventListener("keydown",e=>{if(e.key==="Escape")srcModal.classList.add("hidden")});
+
+$("#loadBtn").onclick=()=>$("#file").click();
+$("#drop2").onclick=()=>$("#file").click();
+$("#file").onchange=e=>handleFile(e.target.files[0]);
+$("#demoBtn").onclick=async()=>{ await ingest(buildDemo()); };
+
+const drop=$("#drop");
+["dragenter","dragover"].forEach(ev=>drop.addEventListener(ev,e=>{e.preventDefault();drop.classList.add("over")}));
+["dragleave","drop"].forEach(ev=>drop.addEventListener(ev,e=>{e.preventDefault();drop.classList.remove("over")}));
+drop.addEventListener("drop",e=>handleFile(e.dataTransfer.files[0]));
+window.addEventListener("dragover",e=>e.preventDefault());
+window.addEventListener("drop",e=>{e.preventDefault();if(e.dataTransfer.files[0])handleFile(e.dataTransfer.files[0])});
+window.addEventListener("paste",e=>{
+  for(const it of (e.clipboardData?.items||[])) if(it.type.startsWith("image/")) handleFile(it.getAsFile());
+});
+
+// dip-search controls: re-detect only
+["minShift","prom","smooth"].forEach(id=>{
+  $("#"+id).addEventListener("input",()=>{
+    const el=$("#"+id);
+    if(id==="minShift")$("#minShiftV").textContent=el.value+" px";
+    if(id==="prom")$("#promV").textContent=(+el.value).toFixed(2);
+    if(id==="smooth")$("#smoothV").textContent=el.value;
+    state.auto=true; detectDip(false);
+  });
+});
+// pipeline controls: re-run stages only
+["gain","center","sigma","radius"].forEach(id=>{
+  $("#"+id).addEventListener("input",()=>{
+    const el=$("#"+id);
+    if(id==="gain")$("#gainV").textContent=(+el.value).toFixed(1);
+    if(id==="center")$("#centerV").textContent=(+el.value).toFixed(2);
+    if(id==="sigma")$("#sigmaV").textContent=(+el.value).toFixed(1);
+    if(id==="radius")$("#radiusV").textContent=el.value+" px";
+    schedulePipeline();
+  });
+});
+$("#invert").onchange=()=>{ if(state.maps.diff)renderStages(); };
+
+$("#ovSeg").addEventListener("click",e=>{
+  const b=e.target.closest("button");if(!b)return;
+  ovMode=+b.dataset.i;
+  [...$("#ovSeg").children].forEach(c=>c.setAttribute("aria-pressed",String(c===b)));
+  syncStrength();
+  if(ovMode===2&&!state.edgeDepth&&state.depthUp)state.edgeDepth=depthEdges(state.depthUp,state.duw,state.duh);
+  compositeDepth();
+});
+// depth scan: expensive, so only on release
+["win","band","gridN"].forEach(id=>{
+  const el=$("#"+id);
+  el.addEventListener("input",()=>{
+    if(id==="win")$("#winV").textContent=(+el.value).toFixed(1)+"× cell";
+    else if(id==="band")$("#bandV").textContent="±"+el.value+"%";
+    else $("#gridNV").textContent=el.value;
+  });
+  el.addEventListener("change",()=>{if(state.lum)scanDepth()});
+});
+// blending: cheap enough to follow the drag
+["blend","floor"].forEach(id=>{
+  $("#"+id).addEventListener("input",()=>{
+    const el=$("#"+id);
+    if(id==="blend")$("#blendV").textContent=(+el.value).toFixed(1)+" cells";
+    else $("#floorV").textContent=(+el.value).toFixed(2);
+    scheduleBlend();
+  });
+});
+$("#edgeMix").addEventListener("input",()=>{
+  $("#edgeMixV").textContent=(+$("#edgeMix").value).toFixed(2);
+  compositeDepth();
+});
+$("#autoFloor").onchange=()=>{syncFloor();scheduleBlend()};
+$("#dim").onchange=compositeDepth;
+$("#cells").onchange=upsampleDepth;
+$("#cmapSeg").addEventListener("click",e=>{
+  const b=e.target.closest("button");if(!b)return;
+  cmapIdx=+b.dataset.i;LUT=rampLUT(cmapIdx);
+  [...$("#cmapSeg").children].forEach(c=>c.setAttribute("aria-pressed",String(c===b)));
+  if(state.depthUp)compositeDepth(); else drawRamp();
+});
+$("#saveDepth").onclick=()=>{
+  const cv=$("#depthView").querySelector("canvas");if(!cv)return;
+  const a=document.createElement("a");
+  a.download=`autostereogram-depth-shift${state.shift}.png`;
+  a.href=cv.toDataURL("image/png");a.click();
+};
+
+$("#shiftIn").addEventListener("change",()=>{
+  const v=parseInt($("#shiftIn").value,10);
+  if(!isFinite(v))return;
+  state.auto=false; state.shift=v; applyShift();
+});
+$("#autoBtn").onclick=()=>{ state.auto=true; detectDip(false); };
+
+$("#plot").addEventListener("click",e=>{
+  if(!state.curve)return;
+  const r=e.currentTarget.getBoundingClientRect();
+  const L=42,R=10,pw=r.width-L-R;
+  const s=Math.round(1+((e.clientX-r.left-L)/pw)*(state.maxShift-1));
+  if(!isFinite(s))return;
+  // snap to a nearby candidate
+  let best=clamp(s,1,state.maxShift), bd=1e9;
+  for(const c of state.candidates){const d=Math.abs(c.s-s);if(d<bd&&d<=Math.max(4,state.maxShift*0.012)){bd=d;best=c.s}}
+  state.auto=false; state.shift=best; applyShift();
+});
+
+$("#saveBtn").onclick=()=>{
+  const cv=$("#stageView").querySelector("canvas");
+  if(!cv)return;
+  const a=document.createElement("a");
+  a.download=`autostereogram-${state.active}-shift${state.shift}.png`;
+  a.href=cv.toDataURL("image/png");a.click();
+};
+
+let rt;
+window.addEventListener("resize",()=>{clearTimeout(rt);rt=setTimeout(drawPlot,120)});
+LUT=rampLUT(cmapIdx);drawRamp();drawPlot();
+</script>
+</body>
+</html>
