@@ -133,6 +133,41 @@ button{font:inherit;cursor:pointer}
 .modal{position:fixed;inset:0;z-index:60;background:rgba(6,20,19,.94);display:flex;align-items:center;justify-content:center;padding:26px;cursor:zoom-out}
 .modal img{max-width:100%;max-height:100%;border:1px solid var(--rule);border-radius:3px}
 
+/* 3D relief view */
+.stage-wrap{position:relative}
+.corner3d{
+  position:absolute;top:10px;right:10px;z-index:5;padding:7px 12px;
+  background:rgba(12,36,34,.82);letter-spacing:.14em;
+  color:var(--brass);border-color:var(--brass);
+  overflow:hidden;
+  animation:ping3d 2.4s ease-out infinite;
+}
+.corner3d::after{
+  content:"";position:absolute;top:0;bottom:0;left:-100%;right:-100%;
+  background:linear-gradient(115deg,transparent 44%,rgba(238,231,214,.55) 50%,transparent 56%);
+  transform:translateX(-34%);
+  animation:sheen3d 2.4s linear infinite;
+  pointer-events:none;
+}
+.corner3d:hover{background:var(--panel);color:#eeb752;border-color:#eeb752}
+.corner3d.seen{animation:none;box-shadow:none}
+.corner3d.seen::after{display:none}
+@keyframes ping3d{
+  0%{box-shadow:0 0 0 0 rgba(221,166,63,.6);text-shadow:0 0 0 rgba(221,166,63,0)}
+  40%{text-shadow:0 0 10px rgba(221,166,63,.75)}
+  75%,100%{box-shadow:0 0 0 11px rgba(221,166,63,0);text-shadow:0 0 0 rgba(221,166,63,0)}
+}
+@keyframes sheen3d{
+  0%,55%{transform:translateX(-34%)}
+  85%,100%{transform:translateX(34%)}
+}
+.modal.three{cursor:default}
+.three-card{background:var(--panel);border:1px solid var(--rule);border-radius:3px;overflow:hidden;max-width:96vw}
+.three-head{display:flex;align-items:center;gap:14px;padding:10px 14px;border-bottom:1px solid var(--rule-soft)}
+.three-hint{font-family:var(--mono);font-size:.66rem;color:var(--dimmer);letter-spacing:.05em}
+.three-head .btn{margin-left:auto;padding:6px 11px}
+#threeCanvas{display:block;background:#061413;max-width:100%}
+
 .card{border:1px solid var(--rule);border-radius:3px;background:var(--panel);overflow:hidden}
 
 .card-head{display:flex;align-items:center;gap:12px;padding:13px 16px;border-bottom:1px solid var(--rule-soft)}
@@ -289,7 +324,10 @@ footer{margin-top:30px;font-family:var(--mono);font-size:.68rem;color:var(--dimm
         <span class="card-aside" id="gridMeta">—</span>
       </div>
       <div class="progress"><span id="dbar"></span></div>
-      <div class="stage-view big" id="depthView"><div class="placeholder">no depth field yet</div></div>
+      <div class="stage-wrap">
+        <div class="stage-view big" id="depthView"><div class="placeholder">no depth field yet</div></div>
+        <button class="btn corner3d hidden" id="threeBtn" title="Animated relief view">3D</button>
+      </div>
       <div class="stage-foot">
         <div class="scale">
           <canvas id="ramp" width="240" height="11"></canvas>
@@ -438,6 +476,18 @@ footer{margin-top:30px;font-family:var(--mono);font-size:.68rem;color:var(--dimm
 
 <div class="modal hidden" id="srcModal"><img id="srcBig" alt="Source image, enlarged"></div>
 
+<div class="modal three hidden" id="threeModal">
+  <div class="three-card">
+    <div class="three-head">
+      <span class="card-title">Relief view</span>
+      <span class="three-hint">decoded surface over the source image · near opaque, far fades · camera drift within 10°</span>
+      <button class="btn" id="threeClose">Close</button>
+    </div>
+    <canvas id="threeCanvas"></canvas>
+    <div class="placeholder hidden" id="threeFallback">WebGL is unavailable in this browser</div>
+  </div>
+</div>
+
 <script>
 "use strict";
 const $ = s => document.querySelector(s);
@@ -484,6 +534,7 @@ async function ingest(source){
   document.querySelector(".wrap").classList.remove("pre");
   $("#srcView").classList.remove("hidden");
   $("#srcMeta").textContent = `${W}×${H}` + (sc<1?` · resized from ${iw}×${ih}`:"");
+  $("#threeBtn").classList.add("hidden");
 
   const ms=$("#minShift");
   ms.max=Math.max(30,Math.round(W*0.12));
@@ -1248,7 +1299,7 @@ function blendDepth(){
   $("#floorV").textContent=(auto?"auto ":"")+f.toFixed(2);
   if(!any){
     $("#depthView").innerHTML='<div class="placeholder">no cells clear the confidence floor</div>';
-    $("#saveDepth").disabled=true;return;
+    $("#saveDepth").disabled=true;$("#threeBtn").classList.add("hidden");return;
   }
   const num=gaussGrid(nu,cols,rows,sig),den=gaussGrid(w,cols,rows,sig),cnt=gaussGrid(on,cols,rows,sig);
   // the fade reads raw confidence, not the floored weights: a cell the floor drops is
@@ -1394,12 +1445,297 @@ function compositeDepth(){
   $("#rampFar").textContent="far · "+state.pFar.toFixed(1)+" px";
   $("#rampNear").textContent=state.pNear.toFixed(1)+" px · near";
   $("#saveDepth").disabled=false;
+  $("#threeBtn").classList.remove("hidden");
 }
 let blendQueued=false;
 function scheduleBlend(){
   if(blendQueued)return;
   blendQueued=true;
   requestAnimationFrame(()=>{blendQueued=false;blendDepth()});
+}
+
+/* ============ 3D relief view ============ */
+// The depth surface is displaced along the rays of the resting camera, so its silhouette
+// opens exactly over the flat copy of the source image underneath; its texture is pulled
+// back by half the local period — the pixels that encode each scene point — matching the
+// depth view's texture overlay. Two motions reveal it: a slight random wiggle of the
+// masked surface over the base, and the camera drifting within ±10°, aimed at the centre.
+const FOV3D=30*Math.PI/180;    // vertical field of view
+const RELIEF3D=0.23;           // exaggerated relief height, fraction of the short side
+const ZBIAS3D=0.035;           // constant bump: the visible relief floats this far above the base
+const GAMMA3D=1.7;             // depth response: convex, near pops out, far hugs the bump
+const WIGGLE3D=0.004;          // wiggle amplitude, fraction of the short side
+const GRID3D=254;              // mesh cells along the long side (255² verts still fit 16-bit indices)
+const SIGK3D=18;               // gain of the sigmoid alpha cutoff
+const WALLLO3D=0.12,WALLHI3D=0.35; // |face normal · z| band: near-perpendicular cliff
+                               // faces are stretch artifacts, cleared below lo, solid above hi
+const CAM_T=[[7,11],[3.5,5.5],[2,3.2]], WIG_T=[[1.1,1.9],[.7,1.2],[.45,.8]];
+const R3D={gl:null,prog:null,loc:null,buf:null,ibuf:null,tex:null,nIdx:0,
+  open:false,raf:0,t0:0,W:0,H:0,dist:0,zScale:0,zBias:0,wAmp:0,sig:null};
+
+function ensure3D(){
+  if(R3D.gl)return R3D.gl;
+  const cv=$("#threeCanvas");
+  const gl=cv.getContext("webgl",{antialias:true,alpha:false})||cv.getContext("experimental-webgl",{antialias:true,alpha:false});
+  if(!gl)return null;
+  // aPos carries x, y, depth and the local period. Scene point x is encoded by the
+  // source pixel pair x±sep/2, so the surface texture is pulled back by half the local
+  // period (uTexOff=0.5) exactly like the depth view's texture overlay; vU2 is the
+  // pair's right member, used where the left one falls off the image. The base pass
+  // shows the image as-is (uTexOff=0).
+  const vs=
+    "attribute vec4 aPos;"+
+    "uniform mat4 uMVP;uniform vec3 uOffset;uniform vec2 uZ;uniform vec2 uSize;uniform float uDist;uniform vec2 uDN;uniform float uTexOff;"+
+    "varying vec2 vUV;varying float vD;varying vec3 vPos;varying float vU2;"+
+    "void main(){"+
+      "float dn=clamp((aPos.z-uDN.x)*uDN.y,0.0,1.0);"+
+      "float z=pow(dn,"+GAMMA3D.toFixed(3)+")*uZ.x+uZ.y;"+
+      "vec3 p=vec3(aPos.xy*(1.0-z/uDist),z)+uOffset;"+
+      "float pxc=aPos.x+0.5*uSize.x;"+
+      "vUV=vec2((pxc-uTexOff*aPos.w)/uSize.x,0.5-aPos.y/uSize.y);"+
+      "vU2=(pxc+uTexOff*aPos.w)/uSize.x;"+
+      "vD=dn;"+
+      "vPos=p;"+
+      "gl_Position=uMVP*vec4(p,1.0);}";
+  // depth doubles as the alpha ramp, pushed through a renormalised sigmoid whose
+  // centre sits between the base level and the objects: base noise saturates to
+  // clear, a near object stays solid all the way to its far edge. On top of that,
+  // faces nearly perpendicular to the base — the stretched walls the heightfield
+  // grows at depth cliffs — are faded out entirely; they are artifacts, not surface.
+  const drv=gl.getExtension("OES_standard_derivatives");
+  const fs=
+    (drv?"#extension GL_OES_standard_derivatives : enable\n":"")+
+    "#ifdef GL_FRAGMENT_PRECISION_HIGH\nprecision highp float;\n#else\nprecision mediump float;\n#endif\n"+
+    "varying vec2 vUV;varying float vD;varying vec3 vPos;varying float vU2;uniform sampler2D uTex;uniform float uOpaque;uniform vec4 uSig;"+
+    "void main(){"+
+      "float u=vUV.x;"+
+      "if(u<0.0)u=vU2;"+                                      // left member off the image: the right member encodes the same point
+      "vec4 t=texture2D(uTex,vec2(u,vUV.y));"+
+      "float m=texture2D(uTex,vec2((vUV.x+vU2)*0.5,vUV.y)).a;"+ // the mask belongs to the scene point, not to the encoding pixel
+      "float s=clamp((1.0/(1.0+exp(-uSig.x*(clamp(vD,0.0,1.0)-uSig.y)))-uSig.z)*uSig.w,0.0,1.0);"+
+      (drv?
+        "vec3 c=cross(dFdx(vPos),dFdy(vPos));"+
+        "s*=smoothstep("+WALLLO3D.toFixed(3)+","+WALLHI3D.toFixed(3)+",abs(c.z)/max(length(c),1e-6));"
+      :"")+
+      "float a=mix(m*s,1.0,uOpaque);"+
+      "if(a<0.01)discard;"+
+      "gl_FragColor=vec4(t.rgb,a);}";
+  const sh=(type,src)=>{const s=gl.createShader(type);gl.shaderSource(s,src);gl.compileShader(s);return s};
+  const p=gl.createProgram();
+  gl.attachShader(p,sh(gl.VERTEX_SHADER,vs));
+  gl.attachShader(p,sh(gl.FRAGMENT_SHADER,fs));
+  gl.linkProgram(p);
+  if(!gl.getProgramParameter(p,gl.LINK_STATUS))return null;
+  R3D.loc={
+    aPos:gl.getAttribLocation(p,"aPos"),
+    uMVP:gl.getUniformLocation(p,"uMVP"),uOffset:gl.getUniformLocation(p,"uOffset"),
+    uZ:gl.getUniformLocation(p,"uZ"),uSize:gl.getUniformLocation(p,"uSize"),
+    uDist:gl.getUniformLocation(p,"uDist"),uTex:gl.getUniformLocation(p,"uTex"),
+    uOpaque:gl.getUniformLocation(p,"uOpaque"),uDN:gl.getUniformLocation(p,"uDN"),
+    uSig:gl.getUniformLocation(p,"uSig"),uTexOff:gl.getUniformLocation(p,"uTexOff")
+  };
+  R3D.prog=p;R3D.buf=gl.createBuffer();R3D.ibuf=gl.createBuffer();R3D.tex=gl.createTexture();
+  gl.bindTexture(gl.TEXTURE_2D,R3D.tex);
+  gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_WRAP_S,gl.CLAMP_TO_EDGE);
+  gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_WRAP_T,gl.CLAMP_TO_EDGE);
+  gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_MIN_FILTER,gl.LINEAR);
+  gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_MAG_FILTER,gl.LINEAR);
+  cv.addEventListener("webglcontextlost",e=>{e.preventDefault();R3D.gl=null;R3D.prog=null;close3D()},false);
+  R3D.gl=gl;
+  return gl;
+}
+
+function bilin3D(D,w,h,x,y){
+  x=clamp(x,0,w-1);y=clamp(y,0,h-1);
+  const x0=Math.floor(x),y0=Math.floor(y),x1=Math.min(w-1,x0+1),y1=Math.min(h-1,y0+1);
+  const fx=x-x0,fy=y-y0,r0=y0*w,r1=y1*w;
+  return (D[r0+x0]*(1-fx)+D[r0+x1]*fx)*(1-fy)+(D[r1+x0]*(1-fx)+D[r1+x1]*fx)*fy;
+}
+
+function upload3D(){
+  const gl=R3D.gl,{W,H}=state,D=state.depthUp,A=state.alphaUp,n=W*H;
+  R3D.W=W;R3D.H=H;
+  // one texture carries both layers: RGB is the source image, alpha is the confidence
+  // mask; depth joins in as a second alpha factor in the shader
+  const px=new Uint8Array(n*4);
+  px.set(state.data);
+  for(let i=0;i<n;i++)px[i*4+3]=(A[i]*255)|0;
+  // min-max of depth over the visible surface, so the alpha ramp spans exactly 0..1
+  let mn=Infinity,mx=-Infinity;
+  for(let i=0;i<n;i++)if(A[i]>0.01){const v=D[i];if(v<mn)mn=v;if(v>mx)mx=v}
+  if(!(mx-mn>1e-6))mn=mx-1;   // flat or empty field: everything opaque
+  R3D.dMin=mn;R3D.dInv=1/(mx-mn);
+  // cutoff estimated from the data: Otsu's threshold on the visible-depth histogram
+  // splits the base-level cluster from the object cluster
+  const hist=new Float64Array(256);
+  for(let i=0;i<n;i++)if(A[i]>0.01)hist[clamp(Math.round((D[i]-mn)*R3D.dInv*255),0,255)]+=A[i];
+  let tot=0,sum=0;
+  for(let b=0;b<256;b++){tot+=hist[b];sum+=b*hist[b]}
+  let sc=0.35;
+  if(tot>0){
+    let wB=0,sumB=0,best=-1,bt=88;
+    for(let b=0;b<256;b++){
+      wB+=hist[b];if(!wB)continue;
+      const wF=tot-wB;if(!wF)break;
+      sumB+=b*hist[b];
+      const dm=sumB/wB-(sum-sumB)/wF,v=wB*wF*dm*dm;
+      if(v>best){best=v;bt=b}
+    }
+    sc=clamp((bt+0.5)/255,0.05,0.6);
+  }
+  const slo=1/(1+Math.exp(SIGK3D*sc)),shi=1/(1+Math.exp(-SIGK3D*(1-sc)));
+  R3D.sig4=[SIGK3D,sc,slo,1/(shi-slo)];
+  gl.bindTexture(gl.TEXTURE_2D,R3D.tex);
+  gl.texImage2D(gl.TEXTURE_2D,0,gl.RGBA,W,H,0,gl.RGBA,gl.UNSIGNED_BYTE,px);
+  // heightfield mesh over the image rectangle; each vertex samples the depth and the
+  // local period, the latter for the half-period texture pull-back
+  const PU=state.perUp&&state.perUp.length===n?state.perUp:null,gp=state.shift;
+  const long=Math.max(W,H);
+  const nx=Math.max(2,Math.round(GRID3D*W/long)),ny=Math.max(2,Math.round(GRID3D*H/long));
+  const vw=nx+1,vh=ny+1;
+  const verts=new Float32Array(vw*vh*4);
+  let k=0;
+  for(let j=0;j<vh;j++){
+    const py=j/ny*H;
+    for(let i=0;i<vw;i++){
+      const pxx=i/nx*W;
+      verts[k++]=pxx-W/2;
+      verts[k++]=H/2-py;
+      verts[k++]=bilin3D(D,W,H,pxx-0.5,py-0.5);
+      verts[k++]=PU?bilin3D(PU,W,H,pxx-0.5,py-0.5):gp;
+    }
+  }
+  const idx=new Uint16Array(nx*ny*6);
+  k=0;
+  for(let j=0;j<ny;j++)for(let i=0;i<nx;i++){
+    const a=j*vw+i,b=a+1,c=a+vw,d=c+1;
+    idx[k++]=a;idx[k++]=c;idx[k++]=b;
+    idx[k++]=b;idx[k++]=c;idx[k++]=d;
+  }
+  gl.bindBuffer(gl.ARRAY_BUFFER,R3D.buf);gl.bufferData(gl.ARRAY_BUFFER,verts,gl.STATIC_DRAW);
+  gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER,R3D.ibuf);gl.bufferData(gl.ELEMENT_ARRAY_BUFFER,idx,gl.STATIC_DRAW);
+  R3D.nIdx=idx.length;
+  const rel=Math.min(W,H);
+  R3D.zScale=RELIEF3D*rel;
+  R3D.zBias=ZBIAS3D*rel;
+  R3D.wAmp=Math.max(1.5,WIGGLE3D*rel);
+  R3D.dist=(H/2)/Math.tan(FOV3D/2)*1.14;
+}
+
+// smooth bounded noise: three sines with random periods and phases, re-based so every
+// take starts at zero — the panel always opens on the exact overlay, then drifts
+function rnd3D(a,b){return a+Math.random()*(b-a)}
+function rawSig3D(s,t){return .55*Math.sin(s.f[0]*t+s.p[0])+.3*Math.sin(s.f[1]*t+s.p[1])+.15*Math.sin(s.f[2]*t+s.p[2])}
+function mkSig3D(T){
+  const s={f:[],p:[]};
+  for(let i=0;i<3;i++){s.f.push(2*Math.PI/rnd3D(T[i][0],T[i][1]));s.p.push(rnd3D(0,2*Math.PI))}
+  s.off=rawSig3D(s,0);
+  s.k=1/(1+Math.abs(s.off));
+  return s;
+}
+function sig3D(s,t){return (rawSig3D(s,t)-s.off)*s.k}
+
+function persp3D(fov,asp,n,f){
+  const t=1/Math.tan(fov/2);
+  return new Float32Array([t/asp,0,0,0, 0,t,0,0, 0,0,(f+n)/(n-f),-1, 0,0,2*f*n/(n-f),0]);
+}
+function lookAt3D(e){
+  // target is the origin, up is +y
+  let zx=e[0],zy=e[1],zz=e[2];
+  let l=Math.hypot(zx,zy,zz);zx/=l;zy/=l;zz/=l;
+  let xx=zz,xz=-zx;
+  l=Math.hypot(xx,xz)||1;xx/=l;xz/=l;
+  const yx=zy*xz,yy=zz*xx-zx*xz,yz=-zy*xx;
+  return new Float32Array([
+    xx,yx,zx,0,
+    0,yy,zy,0,
+    xz,yz,zz,0,
+    -(xx*e[0]+xz*e[2]),-(yx*e[0]+yy*e[1]+yz*e[2]),-(zx*e[0]+zy*e[1]+zz*e[2]),1
+  ]);
+}
+function mmul3D(a,b){
+  const o=new Float32Array(16);
+  for(let c=0;c<4;c++)for(let r=0;r<4;r++){
+    let s=0;for(let q=0;q<4;q++)s+=a[q*4+r]*b[c*4+q];
+    o[c*4+r]=s;
+  }
+  return o;
+}
+
+function size3D(){
+  const cv=$("#threeCanvas"),W=R3D.W||state.W,H=R3D.H||state.H;
+  if(!W||!H)return;
+  const s=Math.min(Math.min(window.innerWidth-52,1200)/W,(window.innerHeight-150)/H,2.5);
+  cv.style.width=Math.round(W*s)+"px";
+  cv.style.height=Math.round(H*s)+"px";
+}
+
+function frame3D(now){
+  if(!R3D.open)return;
+  R3D.raf=requestAnimationFrame(frame3D);
+  const gl=R3D.gl,cv=$("#threeCanvas"),lc=R3D.loc;
+  const dpr=Math.min(2,window.devicePixelRatio||1);
+  const cw=Math.max(2,Math.round(cv.clientWidth*dpr)),ch=Math.max(2,Math.round(cv.clientHeight*dpr));
+  if(cv.width!==cw||cv.height!==ch){cv.width=cw;cv.height=ch}
+  const t=(now-R3D.t0)/1000, deg=Math.PI/180, d=R3D.dist;
+  const yaw=10*deg*sig3D(R3D.sig.yaw,t), pitch=10*deg*sig3D(R3D.sig.pitch,t);
+  const eye=[d*Math.sin(yaw)*Math.cos(pitch),d*Math.sin(pitch),d*Math.cos(yaw)*Math.cos(pitch)];
+  const MVP=mmul3D(persp3D(FOV3D,cw/ch,d*0.2,d*4),lookAt3D(eye));
+  gl.viewport(0,0,cw,ch);
+  gl.clearColor(0.024,0.079,0.075,1);
+  gl.enable(gl.DEPTH_TEST);
+  gl.enable(gl.BLEND);
+  gl.blendFunc(gl.SRC_ALPHA,gl.ONE_MINUS_SRC_ALPHA);
+  gl.clear(gl.COLOR_BUFFER_BIT|gl.DEPTH_BUFFER_BIT);
+  gl.useProgram(R3D.prog);
+  gl.bindBuffer(gl.ARRAY_BUFFER,R3D.buf);
+  gl.enableVertexAttribArray(lc.aPos);
+  gl.vertexAttribPointer(lc.aPos,4,gl.FLOAT,false,0,0);
+  gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER,R3D.ibuf);
+  gl.activeTexture(gl.TEXTURE0);
+  gl.bindTexture(gl.TEXTURE_2D,R3D.tex);
+  gl.uniform1i(lc.uTex,0);
+  gl.uniformMatrix4fv(lc.uMVP,false,MVP);
+  gl.uniform2f(lc.uSize,R3D.W,R3D.H);
+  gl.uniform1f(lc.uDist,d);
+  gl.uniform2f(lc.uDN,R3D.dMin,R3D.dInv);
+  gl.uniform4f(lc.uSig,R3D.sig4[0],R3D.sig4[1],R3D.sig4[2],R3D.sig4[3]);
+  // base: the input image, flat and opaque
+  gl.uniform3f(lc.uOffset,0,0,0);
+  gl.uniform2f(lc.uZ,0,0);
+  gl.uniform1f(lc.uOpaque,1);
+  gl.uniform1f(lc.uTexOff,0);
+  gl.drawElements(gl.TRIANGLES,R3D.nIdx,gl.UNSIGNED_SHORT,0);
+  // relief: texture pulled back by half the local period, alpha-masked, wiggling
+  gl.uniform3f(lc.uOffset,R3D.wAmp*sig3D(R3D.sig.wx,t),R3D.wAmp*sig3D(R3D.sig.wy,t),0);
+  gl.uniform2f(lc.uZ,R3D.zScale,R3D.zBias);
+  gl.uniform1f(lc.uOpaque,0);
+  gl.uniform1f(lc.uTexOff,0.5);
+  gl.drawElements(gl.TRIANGLES,R3D.nIdx,gl.UNSIGNED_SHORT,0);
+}
+
+function open3D(){
+  if(!state.depthUp||state.duw!==state.W||state.duh!==state.H)return;
+  const modal=$("#threeModal"),cv=$("#threeCanvas"),fb=$("#threeFallback");
+  modal.classList.remove("hidden");
+  $("#threeBtn").classList.add("seen");   // it worked: stop calling for attention
+  if(!ensure3D()){
+    cv.classList.add("hidden");fb.classList.remove("hidden");
+    return;
+  }
+  cv.classList.remove("hidden");fb.classList.add("hidden");
+  upload3D();
+  size3D();
+  R3D.sig={yaw:mkSig3D(CAM_T),pitch:mkSig3D(CAM_T),wx:mkSig3D(WIG_T),wy:mkSig3D(WIG_T)};
+  R3D.t0=performance.now();
+  R3D.open=true;
+  cancelAnimationFrame(R3D.raf);
+  R3D.raf=requestAnimationFrame(frame3D);
+}
+function close3D(){
+  R3D.open=false;
+  cancelAnimationFrame(R3D.raf);
+  $("#threeModal").classList.add("hidden");
 }
 
 /* ============ wiring ============ */
@@ -1439,7 +1775,7 @@ $("#srcView").onclick=()=>{
   srcModal.classList.remove("hidden");
 };
 srcModal.onclick=()=>srcModal.classList.add("hidden");
-window.addEventListener("keydown",e=>{if(e.key==="Escape")srcModal.classList.add("hidden")});
+window.addEventListener("keydown",e=>{if(e.key==="Escape"){srcModal.classList.add("hidden");close3D()}});
 
 $("#loadBtn").onclick=()=>$("#file").click();
 $("#drop2").onclick=()=>$("#file").click();
@@ -1525,6 +1861,10 @@ $("#saveDepth").onclick=()=>{
   a.download=`autostereogram-depth-shift${state.shift}.png`;
   a.href=cv.toDataURL("image/png");a.click();
 };
+$("#threeBtn").onclick=open3D;
+$("#threeClose").onclick=close3D;
+$("#threeModal").addEventListener("click",e=>{if(e.target===e.currentTarget)close3D()});
+window.addEventListener("resize",()=>{if(R3D.open)size3D()});
 
 $("#shiftIn").addEventListener("change",()=>{
   const v=parseInt($("#shiftIn").value,10);
