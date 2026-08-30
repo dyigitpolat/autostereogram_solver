@@ -1469,6 +1469,11 @@ const GRID3D=254;              // mesh cells along the long side (255² verts st
 const SIGK3D=18;               // gain of the sigmoid alpha cutoff
 const WALLLO3D=0.12,WALLHI3D=0.35; // |face normal · z| band: near-perpendicular cliff
                                // faces are stretch artifacts, cleared below lo, solid above hi
+const SHADOW3D=0.55;           // peak darkness of the cast shadow
+const DESAT3D=0.2;             // base texture: pulled this far toward grey…
+const DIM3D=0.91;              // …and dimmed to this fraction, so the relief pops
+const BLUR3D=1.6;              // base-texture blur radius in px, a light depth-of-field cue
+const SHSOFT3D=2.0;            // gaussian soften of the shadow map, half-res px
 const CAM_T=[[7,11],[3.5,5.5],[2,3.2]], WIG_T=[[1.1,1.9],[.7,1.2],[.45,.8]];
 const R3D={gl:null,prog:null,loc:null,buf:null,ibuf:null,tex:null,nIdx:0,
   open:false,raf:0,t0:0,W:0,H:0,dist:0,zScale:0,zBias:0,wAmp:0,sig:null};
@@ -1503,15 +1508,30 @@ function ensure3D(){
   // faces nearly perpendicular to the base — the stretched walls the heightfield
   // grows at depth cliffs — are faded out entirely; they are artifacts, not surface.
   const drv=gl.getExtension("OES_standard_derivatives");
+  // base pass only: a small 9-tap disc blur (centre 0.28 + ring 8×0.09)
+  let ring="";
+  for(let k=0;k<8;k++){
+    const an=Math.PI*k/4;
+    ring+="col+=0.09*texture2D(uTex,vec2(u,vUV.y)+bpx*vec2("+Math.cos(an).toFixed(4)+","+Math.sin(an).toFixed(4)+")).rgb;";
+  }
   const fs=
     (drv?"#extension GL_OES_standard_derivatives : enable\n":"")+
     "#ifdef GL_FRAGMENT_PRECISION_HIGH\nprecision highp float;\n#else\nprecision mediump float;\n#endif\n"+
-    "varying vec2 vUV;varying float vD;varying vec3 vPos;varying float vU2;uniform sampler2D uTex;uniform float uOpaque;uniform vec4 uSig;"+
+    "varying vec2 vUV;varying float vD;varying vec3 vPos;varying float vU2;"+
+    "uniform sampler2D uTex;uniform sampler2D uShTex;uniform float uOpaque;uniform vec4 uSig;uniform vec2 uSize;uniform vec2 uShSel;uniform float uBlurR;"+
     "void main(){"+
       "float u=vUV.x;"+
       "if(u<0.0)u=vU2;"+                                      // left member off the image: the right member encodes the same point
-      "vec4 t=texture2D(uTex,vec2(u,vUV.y));"+
-      "float m=texture2D(uTex,vec2((vUV.x+vU2)*0.5,vUV.y)).a;"+ // the mask belongs to the scene point, not to the encoding pixel
+      "vec3 col=texture2D(uTex,vec2(u,vUV.y)).rgb;"+
+      "if(uBlurR>0.0){"+                                      // base only: blur, fade, dim
+        "vec2 bpx=vec2(uBlurR)/uSize;"+
+        "col*=0.28;"+
+        ring+
+        "col=mix(col,vec3(dot(col,vec3(0.299,0.587,0.114))),"+DESAT3D.toFixed(3)+")*"+DIM3D.toFixed(3)+";"+
+      "}"+
+      "vec2 suv=vec2((vUV.x+vU2)*0.5,vUV.y);"+                // the scene point, not the encoding pixel
+      "float m=texture2D(uTex,suv).a;"+
+      "col*=1.0-dot(texture2D(uShTex,suv).rg,uShSel);"+       // r: shadow on the base, g: shadow on the surface
       "float s=clamp((1.0/(1.0+exp(-uSig.x*(clamp(vD,0.0,1.0)-uSig.y)))-uSig.z)*uSig.w,0.0,1.0);"+
       (drv?
         "vec3 c=cross(dFdx(vPos),dFdy(vPos));"+
@@ -1519,7 +1539,7 @@ function ensure3D(){
       :"")+
       "float a=mix(m*s,1.0,uOpaque);"+
       "if(a<0.01)discard;"+
-      "gl_FragColor=vec4(t.rgb,a);}";
+      "gl_FragColor=vec4(col,a);}";
   const sh=(type,src)=>{const s=gl.createShader(type);gl.shaderSource(s,src);gl.compileShader(s);return s};
   const p=gl.createProgram();
   gl.attachShader(p,sh(gl.VERTEX_SHADER,vs));
@@ -1532,14 +1552,19 @@ function ensure3D(){
     uZ:gl.getUniformLocation(p,"uZ"),uSize:gl.getUniformLocation(p,"uSize"),
     uDist:gl.getUniformLocation(p,"uDist"),uTex:gl.getUniformLocation(p,"uTex"),
     uOpaque:gl.getUniformLocation(p,"uOpaque"),uDN:gl.getUniformLocation(p,"uDN"),
-    uSig:gl.getUniformLocation(p,"uSig"),uTexOff:gl.getUniformLocation(p,"uTexOff")
+    uSig:gl.getUniformLocation(p,"uSig"),uTexOff:gl.getUniformLocation(p,"uTexOff"),
+    uShTex:gl.getUniformLocation(p,"uShTex"),uShSel:gl.getUniformLocation(p,"uShSel"),
+    uBlurR:gl.getUniformLocation(p,"uBlurR")
   };
-  R3D.prog=p;R3D.buf=gl.createBuffer();R3D.ibuf=gl.createBuffer();R3D.tex=gl.createTexture();
-  gl.bindTexture(gl.TEXTURE_2D,R3D.tex);
-  gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_WRAP_S,gl.CLAMP_TO_EDGE);
-  gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_WRAP_T,gl.CLAMP_TO_EDGE);
-  gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_MIN_FILTER,gl.LINEAR);
-  gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_MAG_FILTER,gl.LINEAR);
+  R3D.prog=p;R3D.buf=gl.createBuffer();R3D.ibuf=gl.createBuffer();
+  for(const key of ["tex","shTex"]){
+    R3D[key]=gl.createTexture();
+    gl.bindTexture(gl.TEXTURE_2D,R3D[key]);
+    gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_WRAP_S,gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_WRAP_T,gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_MIN_FILTER,gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_MAG_FILTER,gl.LINEAR);
+  }
   cv.addEventListener("webglcontextlost",e=>{e.preventDefault();R3D.gl=null;R3D.prog=null;close3D()},false);
   R3D.gl=gl;
   return gl;
@@ -1620,6 +1645,27 @@ function upload3D(){
   R3D.zBias=ZBIAS3D*rel;
   R3D.wAmp=Math.max(1.5,WIGGLE3D*rel);
   R3D.dist=(H/2)/Math.tan(FOV3D/2)*1.14;
+  // ---- baked drop shadow, half resolution. The light is perpendicular to the base,
+  // so the base is shadowed by the surface straight above it, in proportion to that
+  // surface's opacity — more transparent surface, weaker shadow. A heightfield can
+  // never overhang itself under perpendicular light, so the surface receives none
+  // (the G channel stays zero).
+  const SS=2,sw=Math.max(2,Math.ceil(W/SS)),sh2=Math.max(2,Math.ceil(H/SS));
+  const vis=new Float32Array(sw*sh2),sg=R3D.sig4;
+  for(let j=0;j<sh2;j++)for(let i=0;i<sw;i++){
+    const x=Math.min(W-1,i*SS+(SS>>1)),y=Math.min(H-1,j*SS+(SS>>1)),q=y*W+x;
+    const dn=clamp((D[q]-mn)*R3D.dInv,0,1);
+    vis[j*sw+i]=A[q]*clamp((1/(1+Math.exp(-sg[0]*(dn-sg[1])))-sg[2])*sg[3],0,1);
+  }
+  const shB=gaussBlur(vis,sw,sh2,SHSOFT3D);
+  R3D.shB=shB;R3D.shW=sw;R3D.shH=sh2;   // kept for tests and tuning
+  const sp=new Uint8Array(sw*sh2*4);
+  for(let i=0;i<sw*sh2;i++){
+    sp[i*4]=Math.round(clamp(shB[i],0,1)*SHADOW3D*255);
+    sp[i*4+3]=255;
+  }
+  gl.bindTexture(gl.TEXTURE_2D,R3D.shTex);
+  gl.texImage2D(gl.TEXTURE_2D,0,gl.RGBA,sw,sh2,0,gl.RGBA,gl.UNSIGNED_BYTE,sp);
 }
 
 // smooth bounded noise: three sines with random periods and phases, re-based so every
@@ -1692,6 +1738,9 @@ function frame3D(now){
   gl.enableVertexAttribArray(lc.aPos);
   gl.vertexAttribPointer(lc.aPos,4,gl.FLOAT,false,0,0);
   gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER,R3D.ibuf);
+  gl.activeTexture(gl.TEXTURE1);
+  gl.bindTexture(gl.TEXTURE_2D,R3D.shTex);
+  gl.uniform1i(lc.uShTex,1);
   gl.activeTexture(gl.TEXTURE0);
   gl.bindTexture(gl.TEXTURE_2D,R3D.tex);
   gl.uniform1i(lc.uTex,0);
@@ -1700,17 +1749,21 @@ function frame3D(now){
   gl.uniform1f(lc.uDist,d);
   gl.uniform2f(lc.uDN,R3D.dMin,R3D.dInv);
   gl.uniform4f(lc.uSig,R3D.sig4[0],R3D.sig4[1],R3D.sig4[2],R3D.sig4[3]);
-  // base: the input image, flat and opaque
+  // base: the input image, flat, opaque, slightly blurred, catching the cast shadow
   gl.uniform3f(lc.uOffset,0,0,0);
   gl.uniform2f(lc.uZ,0,0);
   gl.uniform1f(lc.uOpaque,1);
   gl.uniform1f(lc.uTexOff,0);
+  gl.uniform2f(lc.uShSel,1,0);
+  gl.uniform1f(lc.uBlurR,BLUR3D);
   gl.drawElements(gl.TRIANGLES,R3D.nIdx,gl.UNSIGNED_SHORT,0);
-  // relief: texture pulled back by half the local period, alpha-masked, wiggling
+  // relief: texture pulled back by half the local period, alpha-masked, self-shadowed
   gl.uniform3f(lc.uOffset,R3D.wAmp*sig3D(R3D.sig.wx,t),R3D.wAmp*sig3D(R3D.sig.wy,t),0);
   gl.uniform2f(lc.uZ,R3D.zScale,R3D.zBias);
   gl.uniform1f(lc.uOpaque,0);
   gl.uniform1f(lc.uTexOff,0.5);
+  gl.uniform2f(lc.uShSel,0,1);
+  gl.uniform1f(lc.uBlurR,0);
   gl.drawElements(gl.TRIANGLES,R3D.nIdx,gl.UNSIGNED_SHORT,0);
 }
 
