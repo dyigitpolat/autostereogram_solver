@@ -1466,7 +1466,9 @@ const ZBIAS3D=0.035;           // constant bump: the visible relief floats this 
 const GAMMA3D=1.7;             // depth response: convex, near pops out, far hugs the bump
 const WIGGLE3D=0.004;          // wiggle amplitude, fraction of the short side
 const GRID3D=254;              // mesh cells along the long side (255² verts still fit 16-bit indices)
-const SIGK3D=18;               // gain of the sigmoid alpha cutoff
+const SIGLO3D=0.09,SIGHI3D=0.03; // opacity ramp spans [cutoff−lo, cutoff+hi]: fully clear
+                               // below it, exactly opaque above it — saturating fast so
+                               // real surface never lingers semi-transparent
 const WALLLO3D=0.12,WALLHI3D=0.35; // |face normal · z| band: near-perpendicular cliff
                                // faces are stretch artifacts, cleared below lo, solid above hi
 const SHADOW3D=0.55;           // peak darkness of the cast shadow
@@ -1502,9 +1504,9 @@ function ensure3D(){
       "vD=dn;"+
       "vPos=p;"+
       "gl_Position=uMVP*vec4(p,1.0);}";
-  // depth doubles as the alpha ramp, pushed through a renormalised sigmoid whose
-  // centre sits between the base level and the objects: base noise saturates to
-  // clear, a near object stays solid all the way to its far edge. On top of that,
+  // depth doubles as the alpha ramp: a tight smoothstep placed just under the
+  // estimated base level clears background noise, and saturates to exactly opaque
+  // right above it, so real surface never ghosts. On top of that,
   // faces nearly perpendicular to the base — the stretched walls the heightfield
   // grows at depth cliffs — are faded out entirely; they are artifacts, not surface.
   const drv=gl.getExtension("OES_standard_derivatives");
@@ -1518,7 +1520,7 @@ function ensure3D(){
     (drv?"#extension GL_OES_standard_derivatives : enable\n":"")+
     "#ifdef GL_FRAGMENT_PRECISION_HIGH\nprecision highp float;\n#else\nprecision mediump float;\n#endif\n"+
     "varying vec2 vUV;varying float vD;varying vec3 vPos;varying float vU2;"+
-    "uniform sampler2D uTex;uniform sampler2D uShTex;uniform float uOpaque;uniform vec4 uSig;uniform vec2 uSize;uniform vec2 uShSel;uniform float uBlurR;"+
+    "uniform sampler2D uTex;uniform sampler2D uShTex;uniform float uOpaque;uniform vec2 uSig;uniform vec2 uSize;uniform vec2 uShSel;uniform float uBlurR;"+
     "void main(){"+
       "float u=vUV.x;"+
       "if(u<0.0)u=vU2;"+                                      // left member off the image: the right member encodes the same point
@@ -1532,7 +1534,7 @@ function ensure3D(){
       "vec2 suv=vec2((vUV.x+vU2)*0.5,vUV.y);"+                // the scene point, not the encoding pixel
       "float m=texture2D(uTex,suv).a;"+
       "col*=1.0-dot(texture2D(uShTex,suv).rg,uShSel);"+       // r: shadow on the base, g: shadow on the surface
-      "float s=clamp((1.0/(1.0+exp(-uSig.x*(clamp(vD,0.0,1.0)-uSig.y)))-uSig.z)*uSig.w,0.0,1.0);"+
+      "float s=smoothstep(uSig.x,uSig.y,clamp(vD,0.0,1.0));"+
       (drv?
         "vec3 c=cross(dFdx(vPos),dFdy(vPos));"+
         "s*=smoothstep("+WALLLO3D.toFixed(3)+","+WALLHI3D.toFixed(3)+",abs(c.z)/max(length(c),1e-6));"
@@ -1606,10 +1608,9 @@ function upload3D(){
       const dm=sumB/wB-(sum-sumB)/wF,v=wB*wF*dm*dm;
       if(v>best){best=v;bt=b}
     }
-    sc=clamp((bt+0.5)/255,0.05,0.6);
+    sc=clamp((bt+0.5)/255,0.05,0.5);
   }
-  const slo=1/(1+Math.exp(SIGK3D*sc)),shi=1/(1+Math.exp(-SIGK3D*(1-sc)));
-  R3D.sig4=[SIGK3D,sc,slo,1/(shi-slo)];
+  R3D.sig4=[Math.max(0,sc-SIGLO3D),Math.min(1,sc+SIGHI3D)];
   gl.bindTexture(gl.TEXTURE_2D,R3D.tex);
   gl.texImage2D(gl.TEXTURE_2D,0,gl.RGBA,W,H,0,gl.RGBA,gl.UNSIGNED_BYTE,px);
   // heightfield mesh over the image rectangle; each vertex samples the depth and the
@@ -1655,7 +1656,8 @@ function upload3D(){
   for(let j=0;j<sh2;j++)for(let i=0;i<sw;i++){
     const x=Math.min(W-1,i*SS+(SS>>1)),y=Math.min(H-1,j*SS+(SS>>1)),q=y*W+x;
     const dn=clamp((D[q]-mn)*R3D.dInv,0,1);
-    vis[j*sw+i]=A[q]*clamp((1/(1+Math.exp(-sg[0]*(dn-sg[1])))-sg[2])*sg[3],0,1);
+    const t2=clamp((dn-sg[0])/(sg[1]-sg[0]),0,1);
+    vis[j*sw+i]=A[q]*t2*t2*(3-2*t2);
   }
   const shB=gaussBlur(vis,sw,sh2,SHSOFT3D);
   R3D.shB=shB;R3D.shW=sw;R3D.shH=sh2;   // kept for tests and tuning
@@ -1748,7 +1750,7 @@ function frame3D(now){
   gl.uniform2f(lc.uSize,R3D.W,R3D.H);
   gl.uniform1f(lc.uDist,d);
   gl.uniform2f(lc.uDN,R3D.dMin,R3D.dInv);
-  gl.uniform4f(lc.uSig,R3D.sig4[0],R3D.sig4[1],R3D.sig4[2],R3D.sig4[3]);
+  gl.uniform2f(lc.uSig,R3D.sig4[0],R3D.sig4[1]);
   // base: the input image, flat, opaque, slightly blurred, catching the cast shadow
   gl.uniform3f(lc.uOffset,0,0,0);
   gl.uniform2f(lc.uZ,0,0);
