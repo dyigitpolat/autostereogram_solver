@@ -1461,7 +1461,7 @@ function scheduleBlend(){
 // depth view's texture overlay. Two motions reveal it: a slight random wiggle of the
 // masked surface over the base, and the camera drifting within ±10°, aimed at the centre.
 const FOV3D=30*Math.PI/180;    // vertical field of view
-const RELIEF3D=0.23;           // exaggerated relief height, fraction of the short side
+const RELIEF3D=0.34;           // exaggerated relief height, fraction of the short side
 const ZBIAS3D=0.035;           // constant bump: the visible relief floats this far above the base
 const GAMMA3D=1.7;             // depth response: convex, near pops out, far hugs the bump
 const WIGGLE3D=0.004;          // wiggle amplitude, fraction of the short side
@@ -1469,8 +1469,12 @@ const GRID3D=254;              // mesh cells along the long side (255² verts st
 const SIGLO3D=0.09,SIGHI3D=0.03; // opacity ramp spans [cutoff−lo, cutoff+hi]: fully clear
                                // below it, exactly opaque above it — saturating fast so
                                // real surface never lingers semi-transparent
-const WALLLO3D=0.12,WALLHI3D=0.35; // |face normal · z| band: near-perpendicular cliff
-                               // faces are stretch artifacts, cleared below lo, solid above hi
+const WALLLO3D=0.10,WALLHI3D=0.28; // |surface normal · z| band, from the baked heightfield
+                               // gradient: near-perpendicular cliff faces are stretch
+                               // artifacts, cleared below lo, solid above hi
+const FEATHER3D=1.2;           // final feather of the baked opacity, px
+const LAMBERT3D=0.5;           // side shading under the perpendicular light: fully tilted
+                               // flanks darken by this much, flat tops stay untouched
 const SHADOW3D=0.55;           // peak darkness of the cast shadow
 const DESAT3D=0.2;             // base texture: pulled this far toward grey…
 const DIM3D=0.91;              // …and dimmed to this fraction, so the relief pops
@@ -1493,7 +1497,7 @@ function ensure3D(){
   const vs=
     "attribute vec4 aPos;"+
     "uniform mat4 uMVP;uniform vec3 uOffset;uniform vec2 uZ;uniform vec2 uSize;uniform float uDist;uniform vec2 uDN;uniform float uTexOff;"+
-    "varying vec2 vUV;varying float vD;varying vec3 vPos;varying float vU2;"+
+    "varying vec2 vUV;varying float vU2;"+
     "void main(){"+
       "float dn=clamp((aPos.z-uDN.x)*uDN.y,0.0,1.0);"+
       "float z=pow(dn,"+GAMMA3D.toFixed(3)+")*uZ.x+uZ.y;"+
@@ -1501,15 +1505,11 @@ function ensure3D(){
       "float pxc=aPos.x+0.5*uSize.x;"+
       "vUV=vec2((pxc-uTexOff*aPos.w)/uSize.x,0.5-aPos.y/uSize.y);"+
       "vU2=(pxc+uTexOff*aPos.w)/uSize.x;"+
-      "vD=dn;"+
-      "vPos=p;"+
       "gl_Position=uMVP*vec4(p,1.0);}";
-  // depth doubles as the alpha ramp: a tight smoothstep placed just under the
-  // estimated base level clears background noise, and saturates to exactly opaque
-  // right above it, so real surface never ghosts. On top of that,
-  // faces nearly perpendicular to the base — the stretched walls the heightfield
-  // grows at depth cliffs — are faded out entirely; they are artifacts, not surface.
-  const drv=gl.getExtension("OES_standard_derivatives");
+  // The surface opacity — confidence × depth ramp × slope fade, feathered — is baked
+  // per-pixel into the texture's alpha at upload, so the fragment shader just reads it
+  // bilinearly. Silhouettes follow the smooth image-space field, never the mesh
+  // triangulation, which is what keeps the edges clean from every camera angle.
   // base pass only: a small 9-tap disc blur (centre 0.28 + ring 8×0.09)
   let ring="";
   for(let k=0;k<8;k++){
@@ -1517,10 +1517,9 @@ function ensure3D(){
     ring+="col+=0.09*texture2D(uTex,vec2(u,vUV.y)+bpx*vec2("+Math.cos(an).toFixed(4)+","+Math.sin(an).toFixed(4)+")).rgb;";
   }
   const fs=
-    (drv?"#extension GL_OES_standard_derivatives : enable\n":"")+
     "#ifdef GL_FRAGMENT_PRECISION_HIGH\nprecision highp float;\n#else\nprecision mediump float;\n#endif\n"+
-    "varying vec2 vUV;varying float vD;varying vec3 vPos;varying float vU2;"+
-    "uniform sampler2D uTex;uniform sampler2D uShTex;uniform float uOpaque;uniform vec2 uSig;uniform vec2 uSize;uniform vec2 uShSel;uniform float uBlurR;"+
+    "varying vec2 vUV;varying float vU2;"+
+    "uniform sampler2D uTex;uniform sampler2D uShTex;uniform float uOpaque;uniform vec2 uSize;uniform vec2 uShSel;uniform float uBlurR;"+
     "void main(){"+
       "float u=vUV.x;"+
       "if(u<0.0)u=vU2;"+                                      // left member off the image: the right member encodes the same point
@@ -1534,12 +1533,7 @@ function ensure3D(){
       "vec2 suv=vec2((vUV.x+vU2)*0.5,vUV.y);"+                // the scene point, not the encoding pixel
       "float m=texture2D(uTex,suv).a;"+
       "col*=1.0-dot(texture2D(uShTex,suv).rg,uShSel);"+       // r: shadow on the base, g: shadow on the surface
-      "float s=smoothstep(uSig.x,uSig.y,clamp(vD,0.0,1.0));"+
-      (drv?
-        "vec3 c=cross(dFdx(vPos),dFdy(vPos));"+
-        "s*=smoothstep("+WALLLO3D.toFixed(3)+","+WALLHI3D.toFixed(3)+",abs(c.z)/max(length(c),1e-6));"
-      :"")+
-      "float a=mix(m*s,1.0,uOpaque);"+
+      "float a=mix(m,1.0,uOpaque);"+
       "if(a<0.01)discard;"+
       "gl_FragColor=vec4(col,a);}";
   const sh=(type,src)=>{const s=gl.createShader(type);gl.shaderSource(s,src);gl.compileShader(s);return s};
@@ -1554,7 +1548,7 @@ function ensure3D(){
     uZ:gl.getUniformLocation(p,"uZ"),uSize:gl.getUniformLocation(p,"uSize"),
     uDist:gl.getUniformLocation(p,"uDist"),uTex:gl.getUniformLocation(p,"uTex"),
     uOpaque:gl.getUniformLocation(p,"uOpaque"),uDN:gl.getUniformLocation(p,"uDN"),
-    uSig:gl.getUniformLocation(p,"uSig"),uTexOff:gl.getUniformLocation(p,"uTexOff"),
+    uTexOff:gl.getUniformLocation(p,"uTexOff"),
     uShTex:gl.getUniformLocation(p,"uShTex"),uShSel:gl.getUniformLocation(p,"uShSel"),
     uBlurR:gl.getUniformLocation(p,"uBlurR")
   };
@@ -1572,6 +1566,7 @@ function ensure3D(){
   return gl;
 }
 
+function sstep3D(a,b,x){const t=clamp((x-a)/(b-a),0,1);return t*t*(3-2*t)}
 function bilin3D(D,w,h,x,y){
   x=clamp(x,0,w-1);y=clamp(y,0,h-1);
   const x0=Math.floor(x),y0=Math.floor(y),x1=Math.min(w-1,x0+1),y1=Math.min(h-1,y0+1);
@@ -1582,11 +1577,11 @@ function bilin3D(D,w,h,x,y){
 function upload3D(){
   const gl=R3D.gl,{W,H}=state,D=state.depthUp,A=state.alphaUp,n=W*H;
   R3D.W=W;R3D.H=H;
-  // one texture carries both layers: RGB is the source image, alpha is the confidence
-  // mask; depth joins in as a second alpha factor in the shader
-  const px=new Uint8Array(n*4);
-  px.set(state.data);
-  for(let i=0;i<n;i++)px[i*4+3]=(A[i]*255)|0;
+  const rel=Math.min(W,H);
+  R3D.zScale=RELIEF3D*rel;
+  R3D.zBias=ZBIAS3D*rel;
+  R3D.wAmp=Math.max(1.5,WIGGLE3D*rel);
+  R3D.dist=(H/2)/Math.tan(FOV3D/2)*1.14;
   // min-max of depth over the visible surface, so the alpha ramp spans exactly 0..1
   let mn=Infinity,mx=-Infinity;
   for(let i=0;i<n;i++)if(A[i]>0.01){const v=D[i];if(v<mn)mn=v;if(v>mx)mx=v}
@@ -1611,6 +1606,33 @@ function upload3D(){
     sc=clamp((bt+0.5)/255,0.05,0.5);
   }
   R3D.sig4=[Math.max(0,sc-SIGLO3D),Math.min(1,sc+SIGHI3D)];
+  // ---- per-pixel surface opacity, fully baked: confidence × depth ramp × slope fade,
+  // then feathered. The fragment shader samples this bilinearly, so silhouettes trace
+  // the smooth field rather than the mesh triangulation.
+  const sg=R3D.sig4,hF=new Float32Array(n),aF=new Float32Array(n);
+  for(let i=0;i<n;i++){
+    const dn=clamp((D[i]-mn)*R3D.dInv,0,1);
+    hF[i]=Math.pow(dn,GAMMA3D)*R3D.zScale;
+    aF[i]=sstep3D(sg[0],sg[1],dn);
+  }
+  // near-perpendicular stretch walls at depth cliffs, from the heightfield gradient;
+  // milder slopes keep their surface but take Lambert side shading (baked into shd)
+  const shd=new Float32Array(n);
+  for(let y=0;y<H;y++){
+    const y0=Math.max(0,y-2),y1=Math.min(H-1,y+2),o=y*W;
+    for(let x=0;x<W;x++){
+      const x0=Math.max(0,x-2),x1=Math.min(W-1,x+2);
+      const gx=(hF[o+x1]-hF[o+x0])/(x1-x0),gy=(hF[y1*W+x]-hF[y0*W+x])/(y1-y0);
+      const nz=1/Math.sqrt(1+gx*gx+gy*gy);
+      aF[o+x]*=A[o+x]*sstep3D(WALLLO3D,WALLHI3D,nz);
+      shd[o+x]=LAMBERT3D*(1-nz);
+    }
+  }
+  const aS=gaussBlur(aF,W,H,FEATHER3D);
+  // one texture carries both layers: RGB is the source image, alpha is the opacity
+  const px=new Uint8Array(n*4);
+  px.set(state.data);
+  for(let i=0;i<n;i++)px[i*4+3]=(clamp(aS[i],0,1)*255)|0;
   gl.bindTexture(gl.TEXTURE_2D,R3D.tex);
   gl.texImage2D(gl.TEXTURE_2D,0,gl.RGBA,W,H,0,gl.RGBA,gl.UNSIGNED_BYTE,px);
   // heightfield mesh over the image rectangle; each vertex samples the depth and the
@@ -1641,29 +1663,24 @@ function upload3D(){
   gl.bindBuffer(gl.ARRAY_BUFFER,R3D.buf);gl.bufferData(gl.ARRAY_BUFFER,verts,gl.STATIC_DRAW);
   gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER,R3D.ibuf);gl.bufferData(gl.ELEMENT_ARRAY_BUFFER,idx,gl.STATIC_DRAW);
   R3D.nIdx=idx.length;
-  const rel=Math.min(W,H);
-  R3D.zScale=RELIEF3D*rel;
-  R3D.zBias=ZBIAS3D*rel;
-  R3D.wAmp=Math.max(1.5,WIGGLE3D*rel);
-  R3D.dist=(H/2)/Math.tan(FOV3D/2)*1.14;
-  // ---- baked drop shadow, half resolution. The light is perpendicular to the base,
-  // so the base is shadowed by the surface straight above it, in proportion to that
-  // surface's opacity — more transparent surface, weaker shadow. A heightfield can
-  // never overhang itself under perpendicular light, so the surface receives none
-  // (the G channel stays zero).
+  // ---- baked light, half resolution, two channels. R: drop shadow on the base — the
+  // light is perpendicular, so the base is shadowed by the surface straight above it,
+  // in proportion to that surface's opacity. G: Lambert side shading on the surface —
+  // a heightfield can't overhang itself under perpendicular light, so this is all the
+  // shadowing the surface itself takes.
   const SS=2,sw=Math.max(2,Math.ceil(W/SS)),sh2=Math.max(2,Math.ceil(H/SS));
-  const vis=new Float32Array(sw*sh2),sg=R3D.sig4;
+  const vis=new Float32Array(sw*sh2),sv=new Float32Array(sw*sh2);
   for(let j=0;j<sh2;j++)for(let i=0;i<sw;i++){
-    const x=Math.min(W-1,i*SS+(SS>>1)),y=Math.min(H-1,j*SS+(SS>>1)),q=y*W+x;
-    const dn=clamp((D[q]-mn)*R3D.dInv,0,1);
-    const t2=clamp((dn-sg[0])/(sg[1]-sg[0]),0,1);
-    vis[j*sw+i]=A[q]*t2*t2*(3-2*t2);
+    const x=Math.min(W-1,i*SS+(SS>>1)),y=Math.min(H-1,j*SS+(SS>>1));
+    vis[j*sw+i]=aS[y*W+x];
+    sv[j*sw+i]=shd[y*W+x];
   }
-  const shB=gaussBlur(vis,sw,sh2,SHSOFT3D);
+  const shB=gaussBlur(vis,sw,sh2,SHSOFT3D),shG=gaussBlur(sv,sw,sh2,1.0);
   R3D.shB=shB;R3D.shW=sw;R3D.shH=sh2;   // kept for tests and tuning
   const sp=new Uint8Array(sw*sh2*4);
   for(let i=0;i<sw*sh2;i++){
     sp[i*4]=Math.round(clamp(shB[i],0,1)*SHADOW3D*255);
+    sp[i*4+1]=Math.round(clamp(shG[i],0,1)*255);
     sp[i*4+3]=255;
   }
   gl.bindTexture(gl.TEXTURE_2D,R3D.shTex);
@@ -1750,7 +1767,6 @@ function frame3D(now){
   gl.uniform2f(lc.uSize,R3D.W,R3D.H);
   gl.uniform1f(lc.uDist,d);
   gl.uniform2f(lc.uDN,R3D.dMin,R3D.dInv);
-  gl.uniform2f(lc.uSig,R3D.sig4[0],R3D.sig4[1]);
   // base: the input image, flat, opaque, slightly blurred, catching the cast shadow
   gl.uniform3f(lc.uOffset,0,0,0);
   gl.uniform2f(lc.uZ,0,0);
